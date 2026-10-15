@@ -3,9 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCourses, useCreateCourse, useDeleteCourse, useUpdateCourse } from "@/hooks/useCourses";
 import { createCourseApi, deleteCourseApi, fetchCourses, updateCourseApi } from "@/lib/api/courses";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { useToastStore } from "@/stores/useToastStore";
-import type { Course } from "@/types";
+import type { Course, CourseSchedule } from "@/types";
 import { makeCourse, makeSchedule } from "@/test/fixtures";
 import { createQueryWrapper, createTestQueryClient } from "@/test/query";
 
@@ -17,6 +16,7 @@ vi.mock("@/lib/api/courses", () => ({
 }));
 
 const KEY = ["courses"];
+const SCHEDULES_KEY = ["schedules"];
 
 function renderWithClient<T>(hook: () => T) {
   const client = createTestQueryClient();
@@ -40,7 +40,6 @@ const ids = (client: ReturnType<typeof createTestQueryClient>) =>
 beforeEach(() => {
   vi.clearAllMocks();
   useAuthStore.setState({ isLoggedIn: true, hydrated: true });
-  useCourseStore.setState({ schedules: [] });
   useToastStore.setState({ message: null, key: 0 });
 });
 
@@ -163,10 +162,11 @@ describe("useUpdateCourse", () => {
 describe("useDeleteCourse", () => {
   it("보관함과 그 코스의 일정에서 바로 빼고, 성공하면 목록을 다시 받는다", async () => {
     vi.mocked(deleteCourseApi).mockResolvedValue(undefined);
-    useCourseStore.setState({
-      schedules: [makeSchedule({ id: "s1", courseId: "c1" }), makeSchedule({ id: "s2", courseId: "c2" })],
-    });
     const { client, result } = renderWithClient(() => useDeleteCourse());
+    client.setQueryData<CourseSchedule[]>(SCHEDULES_KEY, [
+      makeSchedule({ id: "s1", courseId: "c1" }),
+      makeSchedule({ id: "s2", courseId: "c2" }),
+    ]);
     client.setQueryData<Course[]>(KEY, [makeCourse({ id: "c1" }), makeCourse({ id: "c2" })]);
     const invalidate = vi.spyOn(client, "invalidateQueries");
 
@@ -176,15 +176,18 @@ describe("useDeleteCourse", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(ids(client)).toEqual(["c2"]);
-    expect(useCourseStore.getState().schedules.map((schedule) => schedule.id)).toEqual(["s2"]);
+    expect(client.getQueryData<CourseSchedule[]>(SCHEDULES_KEY)?.map((schedule) => schedule.id)).toEqual(["s2"]);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: KEY });
   });
 
-  it("실패하면 지운 코스를 원래 자리에 되살리고 일정은 서버에서 다시 받는다", async () => {
+  it("실패하면 지운 코스를 원래 자리에, 같이 뺀 일정도 다시 되살린다", async () => {
     vi.mocked(deleteCourseApi).mockRejectedValue(new Error("코스 삭제에 실패했어요"));
     const { client, result } = renderWithClient(() => useDeleteCourse());
     client.setQueryData<Course[]>(KEY, [makeCourse({ id: "c1" }), makeCourse({ id: "c2" }), makeCourse({ id: "c3" })]);
-    const invalidate = vi.spyOn(client, "invalidateQueries");
+    client.setQueryData<CourseSchedule[]>(SCHEDULES_KEY, [
+      makeSchedule({ id: "s1", courseId: "c2" }),
+      makeSchedule({ id: "s2", courseId: "c3" }),
+    ]);
 
     act(() => {
       result.current.mutate("c2");
@@ -192,7 +195,10 @@ describe("useDeleteCourse", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
 
     expect(ids(client)).toEqual(["c1", "c2", "c3"]);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["schedules"] });
+    expect(client.getQueryData<CourseSchedule[]>(SCHEDULES_KEY)?.map((schedule) => schedule.id).sort()).toEqual([
+      "s1",
+      "s2",
+    ]);
     expect(useToastStore.getState().message).toBe("코스 삭제에 실패했어요. 잠시 후 다시 시도해주세요");
   });
 });

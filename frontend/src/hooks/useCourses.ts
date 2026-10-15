@@ -1,6 +1,6 @@
 import { useCallback } from "react";
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { Course } from "@/types";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Course, CourseSchedule } from "@/types";
 import {
   createCourseApi,
   deleteCourseApi,
@@ -8,9 +8,9 @@ import {
   updateCourseApi,
   type CourseUpdateInput,
 } from "@/lib/api/courses";
+import { invalidateWhenIdle, restoreAt } from "@/lib/optimistic";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { useToastStore } from "@/stores/useToastStore";
 
 export type CourseInput = Omit<Course, "id">;
@@ -19,6 +19,7 @@ export type CourseInput = Omit<Course, "id">;
 const TEMP_ID_PREFIX = "optimistic-";
 
 const COURSES_KEY = queryKeys.courses.all;
+const SCHEDULES_KEY = queryKeys.schedules.all;
 
 /**
  * 아직 목록이 없을 때 쓰는 빈 배열. `const { data = [] }`처럼 쓰면 렌더마다 새 배열이 생겨 이걸 의존하는
@@ -35,18 +36,6 @@ export const NO_COURSES: Course[] = [];
 export function useCourses() {
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   return useQuery({ queryKey: COURSES_KEY, queryFn: fetchCourses, enabled: isLoggedIn });
-}
-
-/**
- * 코스 mutation이 모두 끝났을 때만 목록을 다시 받는다.
- *
- * 저장 두 개가 동시에 진행 중일 때 먼저 끝난 쪽이 바로 재조회하면, 아직 응답 안 온 나머지 하나의
- * 낙관적 항목이 서버 목록으로 덮여 잠깐 사라졌다가 다시 나타난다. 마지막 하나가 끝날 때 한 번만 받는다.
- */
-function invalidateWhenIdle(queryClient: QueryClient) {
-  if (queryClient.isMutating({ mutationKey: COURSES_KEY }) === 1) {
-    return queryClient.invalidateQueries({ queryKey: COURSES_KEY });
-  }
 }
 
 /** 실패한 낙관적 변경을 되돌린 뒤 이유를 알린다. 화면이 이미 다른 곳으로 넘어갔어도 보여야 해서 훅에서 띄운다. */
@@ -88,7 +77,7 @@ export function useCreateCourse() {
       notifyFailure("코스 저장에 실패했어요");
     },
 
-    onSettled: () => invalidateWhenIdle(queryClient),
+    onSettled: () => invalidateWhenIdle(queryClient, COURSES_KEY),
   });
 
   const { mutate } = mutation;
@@ -133,13 +122,13 @@ export function useUpdateCourse() {
       notifyFailure("코스 수정에 실패했어요");
     },
 
-    onSettled: () => invalidateWhenIdle(queryClient),
+    onSettled: () => invalidateWhenIdle(queryClient, COURSES_KEY),
   });
 }
 
 /**
  * 코스 삭제. 보관함에서 바로 빼고, 실패하면 원래 자리에 다시 끼운다.
- * 서버에서는 코스가 지워질 때 일정도 CASCADE로 같이 지워지므로 로컬 일정도 맞춘다.
+ * 서버에서는 코스가 지워질 때 일정도 CASCADE로 같이 지워지므로 일정 캐시에서도 같이 빼고 같이 되살린다.
  */
 export function useDeleteCourse() {
   const queryClient = useQueryClient();
@@ -149,31 +138,38 @@ export function useDeleteCourse() {
     mutationFn: (courseId: string) => deleteCourseApi(courseId),
 
     onMutate: async (courseId) => {
-      await queryClient.cancelQueries({ queryKey: COURSES_KEY });
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: COURSES_KEY }),
+        queryClient.cancelQueries({ queryKey: SCHEDULES_KEY }),
+      ]);
       const courses = queryClient.getQueryData<Course[]>(COURSES_KEY);
       const index = courses?.findIndex((course) => course.id === courseId) ?? -1;
       const previous = index >= 0 ? courses?.[index] : undefined;
+      const removedSchedules =
+        queryClient.getQueryData<CourseSchedule[]>(SCHEDULES_KEY)?.filter((item) => item.courseId === courseId) ?? [];
 
       queryClient.setQueryData<Course[]>(COURSES_KEY, (old) => old?.filter((course) => course.id !== courseId));
-      useCourseStore.getState().removeSchedulesOfCourse(courseId);
-      return { previous, index };
+      queryClient.setQueryData<CourseSchedule[]>(SCHEDULES_KEY, (old) =>
+        old?.filter((item) => item.courseId !== courseId)
+      );
+      return { previous, index, removedSchedules };
     },
 
-    onError: (_error, courseId, context) => {
-      const previous = context?.previous;
-      if (previous) {
-        queryClient.setQueryData<Course[]>(COURSES_KEY, (old) => {
-          if (!old || old.some((course) => course.id === courseId)) return old;
-          const next = [...old];
-          next.splice(Math.min(context.index, next.length), 0, previous);
-          return next;
-        });
+    onError: (_error, _courseId, context) => {
+      if (context?.previous) {
+        const { previous, index } = context;
+        queryClient.setQueryData<Course[]>(COURSES_KEY, (old) => restoreAt(old, previous, index));
       }
-      // 같이 걷어낸 일정은 서버 목록을 다시 받아 되살린다.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all });
+      if (context?.removedSchedules.length) {
+        const { removedSchedules } = context;
+        // 일정 화면은 날짜순으로 정렬해서 보여주므로 위치는 상관없다 — 빠진 것만 뒤에 붙인다.
+        queryClient.setQueryData<CourseSchedule[]>(SCHEDULES_KEY, (old) =>
+          old ? [...old, ...removedSchedules.filter((item) => !old.some((entry) => entry.id === item.id))] : old
+        );
+      }
       notifyFailure("코스 삭제에 실패했어요");
     },
 
-    onSettled: () => invalidateWhenIdle(queryClient),
+    onSettled: () => invalidateWhenIdle(queryClient, COURSES_KEY),
   });
 }

@@ -26,9 +26,8 @@ import {
   SOURCE_TONE,
 } from "@/lib/courseFormat";
 import { cn } from "@/lib/cn";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_SCHEDULES, useSchedules } from "@/hooks/useSchedules";
 import { useCourses, useDeleteCourse, useUpdateCourse } from "@/hooks/useCourses";
 import { useSheetStore } from "@/stores/useSheetStore";
 import type { CourseStop } from "@/types";
@@ -48,12 +47,11 @@ const EMOJI_CHOICES = [
 export default function CourseDetailPage({ params }: { params: { courseId: string } }) {
   const router = useRouter();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
-  useSyncCoursesFromApi();
   const { data: courses } = useCourses();
   const hasSynced = courses !== undefined;
   const { mutate: updateCourse } = useUpdateCourse();
   const { mutate: deleteCourse } = useDeleteCourse();
-  const schedules = useCourseStore((state) => state.schedules);
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
   const course = courses?.find((item) => item.id === params.courseId);
   const courseSchedules = schedules
     .filter((item) => item.courseId === params.courseId)

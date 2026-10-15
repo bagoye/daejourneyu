@@ -2,7 +2,6 @@ import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMyBadges } from "@/hooks/useMyBadges";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { usePetStore } from "@/stores/usePetStore";
 import { makeCourse, makePet, makeReview, makeSchedule, makeStop } from "@/test/fixtures";
 
@@ -10,16 +9,14 @@ const hooks = vi.hoisted(() => ({
   useReviews: vi.fn(),
   useMyPosts: vi.fn(),
   usePlaces: vi.fn(),
-  useSyncCoursesFromApi: vi.fn(),
   useCourses: vi.fn(),
+  useSchedules: vi.fn(),
 }));
 
 vi.mock("@/hooks/useReviews", () => ({ useReviews: hooks.useReviews }));
 vi.mock("@/hooks/usePosts", () => ({ useMyPosts: hooks.useMyPosts }));
 vi.mock("@/hooks/usePlaces", () => ({ usePlaces: hooks.usePlaces }));
-vi.mock("@/hooks/useSyncCoursesFromApi", () => ({
-  useSyncCoursesFromApi: hooks.useSyncCoursesFromApi,
-}));
+vi.mock("@/hooks/useSchedules", () => ({ NO_SCHEDULES: [], useSchedules: hooks.useSchedules }));
 vi.mock("@/hooks/useCourses", () => ({ NO_COURSES: [], useCourses: hooks.useCourses }));
 
 const reviews = [makeReview({ id: "mine", isMine: true }), makeReview({ id: "other", isMine: false })];
@@ -46,9 +43,7 @@ beforeEach(() => {
     ],
   });
   hooks.useCourses.mockReturnValue({ data: [course] });
-  useCourseStore.setState({
-    schedules: [makeSchedule({ courseId: "c1", date: "2026-08-01" })],
-  });
+  hooks.useSchedules.mockReturnValue({ data: [makeSchedule({ courseId: "c1", date: "2026-08-01" })] });
   usePetStore.setState({ pets: [makePet()], activePetIndex: 0 });
   useAuthStore.setState({ isLoggedIn: true, hydrated: true });
 });
@@ -58,11 +53,10 @@ afterEach(() => {
 });
 
 describe("useMyBadges", () => {
-  it("스토어·훅 데이터를 모아 뱃지를 계산하고 코앞인 뱃지와 문장을 고른다", () => {
+  it("스토어·서버 데이터 훅을 모아 뱃지를 계산하고 코앞인 뱃지와 문장을 고른다", () => {
     const { result } = renderHook(() => useMyBadges());
 
     expect(hooks.useMyPosts).toHaveBeenCalledWith("recent", true);
-    expect(hooks.useSyncCoursesFromApi).toHaveBeenCalled();
 
     const { badges, got, gotCount, total, nearest, nearestMessage } = result.current;
     expect(total).toBe(badges.length);
@@ -86,7 +80,7 @@ describe("useMyBadges", () => {
 
   it("코앞인 뱃지가 없으면 문장도 비운다", () => {
     hooks.useCourses.mockReturnValue({ data: [] });
-    useCourseStore.setState({ schedules: [] });
+    hooks.useSchedules.mockReturnValue({ data: [] });
     usePetStore.setState({ pets: [], activePetIndex: 0 });
     hooks.useReviews.mockReturnValue({ data: [] });
 

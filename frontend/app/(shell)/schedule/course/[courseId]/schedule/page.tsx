@@ -8,8 +8,7 @@ import { Card } from "@/components/ui/Card";
 import { LoginRequiredGate } from "@/components/course/LoginRequiredGate";
 import { MonthCalendarGrid } from "@/components/course/MonthCalendarGrid";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useCourseStore } from "@/stores/useCourseStore";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_SCHEDULES, useCreateSchedule, useDeleteSchedule, useSchedules } from "@/hooks/useSchedules";
 import { useCourses } from "@/hooks/useCourses";
 import { useToastStore } from "@/stores/useToastStore";
 
@@ -20,12 +19,11 @@ function todayYmd(): string {
 export default function CourseScheduleAddPage({ params }: { params: { courseId: string } }) {
   const router = useRouter();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
-  useSyncCoursesFromApi();
   const showToast = useToastStore((state) => state.show);
 
   const { data: courses } = useCourses();
   const course = courses?.find((c) => c.id === params.courseId);
-  const schedules = useCourseStore((state) => state.schedules);
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
   // .filter().sort()를 셀렉터 안에서 바로 하면 store가 갱신될 때마다(구독 중인 다른 필드가
   // 바뀌어도) 매번 새 배열을 만들어 불필요한 리렌더를 유발한다 — schedules 값 자체가 바뀔 때만
   // 다시 계산한다.
@@ -33,8 +31,8 @@ export default function CourseScheduleAddPage({ params }: { params: { courseId: 
     () => schedules.filter((s) => s.courseId === params.courseId).sort((a, b) => a.date.localeCompare(b.date)),
     [schedules, params.courseId]
   );
-  const addSchedule = useCourseStore((state) => state.addSchedule);
-  const removeSchedule = useCourseStore((state) => state.removeSchedule);
+  const { mutateAsync: addSchedule } = useCreateSchedule();
+  const { mutateAsync: removeSchedule } = useDeleteSchedule();
 
   const [date, setDate] = useState(todayYmd());
   const [saving, setSaving] = useState(false);
@@ -60,7 +58,7 @@ export default function CourseScheduleAddPage({ params }: { params: { courseId: 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await addSchedule(course.id, date);
+      await addSchedule({ courseId: course.id, date });
       showToast("일정을 등록했어요");
       router.push(`/schedule?tab=calendar&date=${date}`);
     } catch {
