@@ -1,0 +1,57 @@
+# PR마다(그리고 main에 머지될 때) 프론트·백엔드의 타입 검사·린트·테스트를 돌린다.
+# 두 패키지는 의존성이 따로라 job을 나눠 병렬로 돌린다.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 같은 PR에 새 커밋이 올라오면 이전 실행은 취소한다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: 타입 검사
+        run: npm run typecheck
+      - name: 린트
+        run: npm run lint
+      - name: 테스트
+        run: npm test
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # prisma generate가 schema의 env("DATABASE_URL")을 읽는다. 테스트는 Prisma를 mock하므로 접속은 안 한다.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Prisma 클라이언트 생성
+        run: npx prisma generate
+      - name: 타입 검사
+        run: npm run typecheck
+      - name: 테스트
+        run: npm test
