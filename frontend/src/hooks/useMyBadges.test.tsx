@@ -11,6 +11,7 @@ const hooks = vi.hoisted(() => ({
   useMyPosts: vi.fn(),
   usePlaces: vi.fn(),
   useSyncCoursesFromApi: vi.fn(),
+  useCourses: vi.fn(),
 }));
 
 vi.mock("@/hooks/useReviews", () => ({ useReviews: hooks.useReviews }));
@@ -19,6 +20,7 @@ vi.mock("@/hooks/usePlaces", () => ({ usePlaces: hooks.usePlaces }));
 vi.mock("@/hooks/useSyncCoursesFromApi", () => ({
   useSyncCoursesFromApi: hooks.useSyncCoursesFromApi,
 }));
+vi.mock("@/hooks/useCourses", () => ({ NO_COURSES: [], useCourses: hooks.useCourses }));
 
 const reviews = [makeReview({ id: "mine", isMine: true }), makeReview({ id: "other", isMine: false })];
 
@@ -43,8 +45,8 @@ beforeEach(() => {
       ],
     ],
   });
+  hooks.useCourses.mockReturnValue({ data: [course] });
   useCourseStore.setState({
-    courses: [course],
     schedules: [makeSchedule({ courseId: "c1", date: "2026-08-01" })],
   });
   usePetStore.setState({ pets: [makePet()], activePetIndex: 0 });
@@ -83,7 +85,8 @@ describe("useMyBadges", () => {
   });
 
   it("코앞인 뱃지가 없으면 문장도 비운다", () => {
-    useCourseStore.setState({ courses: [], schedules: [] });
+    hooks.useCourses.mockReturnValue({ data: [] });
+    useCourseStore.setState({ schedules: [] });
     usePetStore.setState({ pets: [], activePetIndex: 0 });
     hooks.useReviews.mockReturnValue({ data: [] });
 

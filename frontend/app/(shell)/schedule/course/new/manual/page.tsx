@@ -9,7 +9,7 @@ import { LoginModal } from "@/components/my/LoginModal";
 import { NightsStep } from "./steps/NightsStep";
 import { PlacesStep } from "./steps/PlacesStep";
 import { ReviewStep } from "./steps/ReviewStep";
-import { useCourseStore } from "@/stores/useCourseStore";
+import { useCreateCourse } from "@/hooks/useCourses";
 import { useToastStore } from "@/stores/useToastStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { nearestNeighborRoute } from "@/lib/nearestNeighborRoute";
@@ -25,7 +25,7 @@ function defaultCourseName() {
 
 export default function ManualCourseWizardPage() {
   const router = useRouter();
-  const addCourse = useCourseStore((state) => state.addCourse);
+  const { createCourse } = useCreateCourse();
   const showToast = useToastStore((state) => state.show);
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
 
@@ -108,7 +108,7 @@ export default function ManualCourseWizardPage() {
       return;
     }
     const label = courseName.trim() || defaultCourseName();
-    addCourse({
+    createCourse({
       label,
       nights,
       transport: "자차",

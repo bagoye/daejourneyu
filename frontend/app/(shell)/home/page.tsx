@@ -12,6 +12,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { usePetStore } from "@/stores/usePetStore";
 import { useCourseStore } from "@/stores/useCourseStore";
 import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_COURSES, useCourses } from "@/hooks/useCourses";
 import { findActiveTrip } from "@/lib/schedule";
 import { toCrowdPlace, type CrowdPlace } from "@/lib/crowd";
 import { mockArticles } from "@/mocks";
@@ -31,7 +32,7 @@ export default function HomePage() {
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   const activePet = usePetStore((state) => state.activePet());
   useSyncCoursesFromApi();
-  const courses = useCourseStore((state) => state.courses);
+  const { data: courses = NO_COURSES } = useCourses();
   const schedules = useCourseStore((state) => state.schedules);
   const [guestBannerDismissed, setGuestBannerDismissed] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);

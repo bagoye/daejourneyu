@@ -12,7 +12,7 @@ import { GeneratedResultStep } from "./steps/GeneratedResultStep";
 import { LoginModal } from "@/components/my/LoginModal";
 import { MBTI_QUESTIONS, resolveMbtiType, scoreAnswers, topTheme, type CourseTheme, type MbtiAnswer } from "@/lib/mbti";
 import { placeToStop } from "@/lib/courseFormat";
-import { useCourseStore } from "@/stores/useCourseStore";
+import { useCreateCourse } from "@/hooks/useCourses";
 import { useToastStore } from "@/stores/useToastStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { usePetStore } from "@/stores/usePetStore";
@@ -157,7 +157,7 @@ export default function MbtiCourseWizardPage() {
 function MbtiCourseWizard() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const addCourse = useCourseStore((state) => state.addCourse);
+  const { createCourse } = useCreateCourse();
   const showToast = useToastStore((state) => state.show);
   const { data: apiPlaces } = usePickablePlaces();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
@@ -253,7 +253,7 @@ function MbtiCourseWizard() {
       showToast("추천할 장소가 부족해요");
       return;
     }
-    addCourse({
+    createCourse({
       label: COURSE_TITLES[theme],
       nights,
       transport: DEFAULT_TRANSPORT,

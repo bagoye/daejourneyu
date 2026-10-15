@@ -6,6 +6,7 @@ import { useReviews } from "@/hooks/useReviews";
 import { useMyPosts } from "@/hooks/usePosts";
 import { usePlaces } from "@/hooks/usePlaces";
 import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_COURSES, useCourses } from "@/hooks/useCourses";
 import {
   computeMyBadges,
   nearBadgeMessage,
@@ -42,7 +43,7 @@ export function useMyBadges(): MyBadges {
   const { data: places = [] } = usePlaces();
   // 마이탭 진입이 SCHEDULE 탭을 거치지 않을 수 있으므로(딥링크 등) 여기서도 직접 동기화한다.
   useSyncCoursesFromApi();
-  const courses = useCourseStore((state) => state.courses);
+  const { data: courses = NO_COURSES } = useCourses();
   const schedules = useCourseStore((state) => state.schedules);
 
   const input = useMemo<BadgeInput>(

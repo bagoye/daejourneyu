@@ -10,6 +10,7 @@ import { MonthCalendarGrid } from "@/components/course/MonthCalendarGrid";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useCourseStore } from "@/stores/useCourseStore";
 import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { useCourses } from "@/hooks/useCourses";
 import { useToastStore } from "@/stores/useToastStore";
 
 function todayYmd(): string {
@@ -22,7 +23,8 @@ export default function CourseScheduleAddPage({ params }: { params: { courseId: 
   useSyncCoursesFromApi();
   const showToast = useToastStore((state) => state.show);
 
-  const course = useCourseStore((state) => state.courses.find((c) => c.id === params.courseId));
+  const { data: courses } = useCourses();
+  const course = courses?.find((c) => c.id === params.courseId);
   const schedules = useCourseStore((state) => state.schedules);
   // .filter().sort()를 셀렉터 안에서 바로 하면 store가 갱신될 때마다(구독 중인 다른 필드가
   // 바뀌어도) 매번 새 배열을 만들어 불필요한 리렌더를 유발한다 — schedules 값 자체가 바뀔 때만

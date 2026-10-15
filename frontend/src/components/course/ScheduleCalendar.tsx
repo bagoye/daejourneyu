@@ -8,6 +8,7 @@ import { BottomSheet } from "@/components/ui/BottomSheet";
 import { cn } from "@/lib/cn";
 import { nightsLabel } from "@/lib/courseFormat";
 import { useCourseStore } from "@/stores/useCourseStore";
+import { NO_COURSES, useCourses } from "@/hooks/useCourses";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useToastStore } from "@/stores/useToastStore";
 import type { CourseSource } from "@/types";
@@ -40,7 +41,7 @@ function toYmd(year: number, month0: number, day: number) {
  */
 export function ScheduleCalendar({ initialDate }: { initialDate?: string }) {
   const router = useRouter();
-  const courses = useCourseStore((state) => state.courses);
+  const { data: courses = NO_COURSES } = useCourses();
   const schedules = useCourseStore((state) => state.schedules);
   const addSchedule = useCourseStore((state) => state.addSchedule);
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
