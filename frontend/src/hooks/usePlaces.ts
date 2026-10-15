@@ -3,6 +3,7 @@ import type { DaejeonDistrict, Place, PlaceCategory } from "@/types";
 import { mockPlaces } from "@/mocks";
 import { filterPlaces } from "@/lib/placeFilters";
 import { apiUrl } from "@/lib/api/authFetch";
+import { queryKeys } from "@/lib/queryKeys";
 
 export interface PlacesFilter {
   district?: DaejeonDistrict | null;
@@ -41,7 +42,7 @@ async function fetchPlaces(filter: PlacesFilter): Promise<Place[]> {
 
 export function usePlaces(filter: PlacesFilter = {}) {
   return useQuery({
-    queryKey: ["places", filter.district ?? null, filter.category ?? null, filter.source ?? null],
+    queryKey: queryKeys.places.list(filter),
     queryFn: () => fetchPlaces(filter),
     staleTime: 30 * 60 * 1000,
     // 필터를 바꿔 새로 요청하는 동안 직전 목록을 유지해 "불러오는 중…"이 깜빡이지 않게 한다.

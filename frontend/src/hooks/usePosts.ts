@@ -20,14 +20,13 @@ import {
   type PostUpdateInput,
 } from "@/lib/api/posts";
 import { usePetStore } from "@/stores/usePetStore";
+import { queryKeys } from "@/lib/queryKeys";
 
 /** 무한 스크롤 한 번에 받아오는 개수. 카드가 커서 한 화면에 3~4장이라 10장이면 두 화면 남짓. */
 const PAGE_SIZE = 10;
 
 /** 내 글 탭은 서버 페이지네이션 없이 한 번에 받는다 — 본인이 쓴 글이라 애초에 몇 개 안 된다. */
 const MY_POSTS_LIMIT = 50;
-
-const POSTS_KEY = ["posts"];
 
 /**
  * 목록을 "신선한 것"으로 볼 시간.
@@ -43,11 +42,6 @@ const LIST_STALE_MS = 60_000;
 
 /** 인기 배너는 전체 최다 담김이라 더 천천히 바뀐다. */
 const HOTTEST_STALE_MS = 5 * 60_000;
-
-/** 목록·상세·인기 배너가 모두 이 접두사를 공유해서, 글이 하나 바뀌면 한 번에 무효화된다. */
-function listKey(params: PostListParams) {
-  return [...POSTS_KEY, "list", params];
-}
 
 /**
  * 뷰어의 반려동물 유형을 붙인다.
@@ -101,7 +95,7 @@ export function useFeedPosts({
     : { keyword, sort, sameTypeName, limit: PAGE_SIZE };
 
   const query = useInfiniteQuery({
-    queryKey: listKey(params),
+    queryKey: queryKeys.posts.list(params),
     queryFn: ({ pageParam }) => fetchPostsApi({ ...params, cursor: pageParam }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
@@ -128,7 +122,7 @@ export function useMyPosts(sort: PostListParams["sort"] = "recent", enabled = tr
   const params: PostListParams = { mine: true, sort, limit: MY_POSTS_LIMIT };
 
   const query = useQuery({
-    queryKey: listKey(params),
+    queryKey: queryKeys.posts.list(params),
     queryFn: () => fetchPostsApi(params),
     enabled,
     staleTime: LIST_STALE_MS,
@@ -151,7 +145,7 @@ export function useHottestPost(enabled: boolean) {
   const params: PostListParams = { sort: "saves", limit: 1 };
 
   const query = useQuery({
-    queryKey: listKey(params),
+    queryKey: queryKeys.posts.list(params),
     queryFn: () => fetchPostsApi(params),
     enabled,
     staleTime: HOTTEST_STALE_MS,
@@ -171,7 +165,7 @@ export function usePost(postId: string) {
   const { decorate } = useSameTypeDecorator();
 
   const query = useQuery({
-    queryKey: [...POSTS_KEY, "detail", postId],
+    queryKey: queryKeys.posts.detail(postId),
     queryFn: () => fetchPostApi(postId),
     enabled: postId.length > 0,
     staleTime: LIST_STALE_MS,
@@ -227,8 +221,8 @@ export function useToggleSave() {
 
     onMutate: async ({ postId, next }) => {
       // 진행 중인 조회가 낙관적 값을 덮어쓰지 않게 먼저 멈춘다.
-      await queryClient.cancelQueries({ queryKey: POSTS_KEY });
-      const snapshot = queryClient.getQueriesData({ queryKey: POSTS_KEY });
+      await queryClient.cancelQueries({ queryKey: queryKeys.posts.all });
+      const snapshot = queryClient.getQueriesData({ queryKey: queryKeys.posts.all });
 
       for (const [key, data] of snapshot) {
         const current = findPostInCache(data, postId);
@@ -244,11 +238,11 @@ export function useToggleSave() {
     },
 
     onSuccess: (result, { postId }) => {
-      for (const [key, data] of queryClient.getQueriesData({ queryKey: POSTS_KEY })) {
+      for (const [key, data] of queryClient.getQueriesData({ queryKey: queryKeys.posts.all })) {
         queryClient.setQueryData(key, patchPost(data, postId, result.saved, result.saves));
       }
       // 보관함에 사본이 생기거나 사라졌으므로 코스 목록을 다시 받는다.
-      queryClient.invalidateQueries({ queryKey: ["courses"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.courses.all });
     },
   });
 }
@@ -275,7 +269,7 @@ export function useCreatePost() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: PostCreateInput) => createPostApi(input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: POSTS_KEY }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.posts.all }),
   });
 }
 
@@ -285,7 +279,7 @@ export function useUpdatePost() {
   return useMutation({
     mutationFn: ({ postId, input }: { postId: string; input: PostUpdateInput }) =>
       updatePostApi(postId, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: POSTS_KEY }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.posts.all }),
   });
 }
 
@@ -294,6 +288,6 @@ export function useDeletePost() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (postId: string) => deletePostApi(postId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: POSTS_KEY }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.posts.all }),
   });
 }
