@@ -28,6 +28,9 @@ export default defineConfig({
           environment: "jsdom",
           include: ["src/**/*.test.tsx", "app/**/*.test.tsx"],
           setupFiles: ["./vitest.setup.dom.tsx"],
+          // Node의 fetch는 "/api/..." 같은 상대경로를 못 받는다. apiUrl이 절대 URL을 만들도록 오리진을
+          // 넣고, MSW 핸들러(src/test/msw/handlers.ts)도 같은 오리진으로 맞춘다.
+          env: { NEXT_PUBLIC_API_ORIGIN: "http://localhost" },
         },
       },
     ],
