@@ -2,7 +2,6 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { usePetStore } from "@/stores/usePetStore";
 import { useToastStore } from "@/stores/useToastStore";
 import {
@@ -26,15 +25,13 @@ const hooks = vi.hoisted(() => ({
   useMyPosts: vi.fn(),
   useCreatePost: vi.fn(),
   mutateAsync: vi.fn(),
-  useSyncCoursesFromApi: vi.fn(),
+  useCourses: vi.fn(),
 }));
 vi.mock("@/hooks/usePosts", () => ({
   useMyPosts: hooks.useMyPosts,
   useCreatePost: hooks.useCreatePost,
 }));
-vi.mock("@/hooks/useSyncCoursesFromApi", () => ({
-  useSyncCoursesFromApi: hooks.useSyncCoursesFromApi,
-}));
+vi.mock("@/hooks/useCourses", () => ({ useCourses: hooks.useCourses }));
 
 const course = makeCourse({
   id: "course-1",
@@ -57,7 +54,7 @@ beforeEach(() => {
     pets: [makePet({ emoji: "🐶", mbti: { code: "ENFP", name: PET_TYPE_NAME, theme: "산책", traits: [] } })],
     activePetIndex: 0,
   });
-  useCourseStore.setState({ courses: [course] });
+  hooks.useCourses.mockReturnValue({ data: [course] });
   useToastStore.setState({ message: null, key: 0 });
 });
 

@@ -5,6 +5,7 @@ import {
   formatFeedDate,
   formatPostDate,
   formatStopSummary,
+  paginate,
   resolveArticleLike,
   resolvePostInteraction,
   sortArticles,
@@ -92,6 +93,23 @@ describe("sortArticles", () => {
     const input = [lessLiked, older, newer];
     sortArticles(input, "popular");
     expect(input.map((a) => a.id)).toEqual(["less", "older", "newer"]);
+  });
+});
+
+describe("paginate", () => {
+  const items = [1, 2, 3, 4, 5];
+
+  it("perPage 단위로 자르고 전체 페이지 수를 알려준다", () => {
+    expect(paginate(items, 1, 2)).toEqual({ items: [3, 4], page: 1, totalPages: 3 });
+  });
+
+  it("범위를 벗어난 페이지는 처음·마지막 페이지로 보정한다", () => {
+    expect(paginate(items, 9, 2)).toEqual({ items: [5], page: 2, totalPages: 3 });
+    expect(paginate(items, -1, 2)).toEqual({ items: [1, 2], page: 0, totalPages: 3 });
+  });
+
+  it("항목이 없어도 1페이지로 본다", () => {
+    expect(paginate([], 0, 4)).toEqual({ items: [], page: 0, totalPages: 1 });
   });
 });
 

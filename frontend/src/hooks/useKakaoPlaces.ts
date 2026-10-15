@@ -3,6 +3,7 @@ import { mapKakaoPlaceToPlace, type ApiKakaoPlace } from "@/lib/kakaoPlaceMapper
 import { apiUrl } from "@/lib/api/authFetch";
 import type { PickablePlace } from "@/lib/petTourMapper";
 import type { PlaceCategory } from "@/types";
+import { queryKeys } from "@/lib/queryKeys";
 
 async function fetchKakaoPlaces(query: string, category: PlaceCategory): Promise<PickablePlace[]> {
   const res = await fetch(apiUrl(`/api/kakao-places?query=${encodeURIComponent(query)}&size=10`));
@@ -26,7 +27,7 @@ export interface KakaoSearchTarget {
 export function useKakaoPlacesMulti(targets: KakaoSearchTarget[], enabled: boolean) {
   const results = useQueries({
     queries: targets.map((target) => ({
-      queryKey: ["kakao-places", target.query, target.category],
+      queryKey: queryKeys.kakaoPlaces.search(target.query, target.category),
       queryFn: () => fetchKakaoPlaces(target.query, target.category),
       enabled: enabled && target.query.trim().length > 0,
       staleTime: 30 * 60 * 1000,

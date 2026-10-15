@@ -10,8 +10,8 @@ import { LoginModal } from "@/components/my/LoginModal";
 import { usePlaces } from "@/hooks/usePlaces";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { usePetStore } from "@/stores/usePetStore";
-import { useCourseStore } from "@/stores/useCourseStore";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_SCHEDULES, useSchedules } from "@/hooks/useSchedules";
+import { NO_COURSES, useCourses } from "@/hooks/useCourses";
 import { findActiveTrip } from "@/lib/schedule";
 import { toCrowdPlace, type CrowdPlace } from "@/lib/crowd";
 import { mockArticles } from "@/mocks";
@@ -30,9 +30,8 @@ export default function HomePage() {
   const router = useRouter();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   const activePet = usePetStore((state) => state.activePet());
-  useSyncCoursesFromApi();
-  const courses = useCourseStore((state) => state.courses);
-  const schedules = useCourseStore((state) => state.schedules);
+  const { data: courses = NO_COURSES } = useCourses();
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
   const [guestBannerDismissed, setGuestBannerDismissed] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
 

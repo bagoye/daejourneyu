@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { WeatherResponse } from "@/lib/weather";
 import { apiUrl } from "@/lib/api/authFetch";
+import { queryKeys } from "@/lib/queryKeys";
 
 function getBrowserCoords(): Promise<{ lat: number; lng: number } | null> {
   return new Promise((resolve) => {
@@ -30,7 +31,7 @@ async function fetchWeather(): Promise<WeatherResponse> {
  */
 export function useWeather() {
   return useQuery({
-    queryKey: ["weather"],
+    queryKey: queryKeys.weather.current,
     queryFn: fetchWeather,
     staleTime: 30 * 60 * 1000,
     retry: 1,

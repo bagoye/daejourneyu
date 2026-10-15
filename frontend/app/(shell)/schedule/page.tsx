@@ -8,10 +8,10 @@ import { CourseCard } from "@/components/course/CourseCard";
 import { ScheduleCalendar } from "@/components/course/ScheduleCalendar";
 import { LoginRequiredGate } from "@/components/course/LoginRequiredGate";
 import { TileButton } from "@/components/ui/TileButton";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { usePetStore } from "@/stores/usePetStore";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_SCHEDULES, useSchedules } from "@/hooks/useSchedules";
+import { useCourses } from "@/hooks/useCourses";
 import { resolveMbtiType } from "@/lib/mbti";
 
 type ScheduleSegment = "내 코스" | "캘린더";
@@ -33,18 +33,18 @@ function ScheduleTabContent() {
   const [segment, setSegment] = useState<ScheduleSegment>(
     searchParams.get("tab") === "calendar" ? "캘린더" : "내 코스"
   );
-  const storeCourses = useCourseStore((state) => state.courses);
-  const hasSynced = useCourseStore((state) => state.hasSynced);
-  const storeSchedules = useCourseStore((state) => state.schedules);
+  // data가 undefined면 아직 서버 목록을 한 번도 못 받은 것 — 그동안은 "불러오는 중…"을 띄운다.
+  const { data: apiCourses } = useCourses();
+  const hasSynced = apiCourses !== undefined;
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   // 검사 결과는 반려동물에 저장돼 있다(PUT /api/pets/:id/mbti).
   const savedMbtiCode = usePetStore((state) => state.activePet()?.mbti?.code ?? null);
-  useSyncCoursesFromApi();
 
-  const courses = [...storeCourses].reverse();
+  const courses = [...(apiCourses ?? [])].reverse();
   const preview = courses.slice(0, VAULT_PREVIEW_COUNT);
   const scheduleCountByCourse = new Map<string, number>();
-  for (const schedule of storeSchedules) {
+  for (const schedule of schedules) {
     scheduleCountByCourse.set(schedule.courseId, (scheduleCountByCourse.get(schedule.courseId) ?? 0) + 1);
   }
 

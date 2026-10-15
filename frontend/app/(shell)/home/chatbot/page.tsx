@@ -6,7 +6,7 @@ import { TopBar } from "@/components/shell/TopBar";
 import { LoginModal } from "@/components/my/LoginModal";
 import { Emoji3D } from "@/components/ui/Emoji3D";
 import { useToastStore } from "@/stores/useToastStore";
-import { useCourseStore } from "@/stores/useCourseStore";
+import { useCreateCourse } from "@/hooks/useCourses";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { cn } from "@/lib/cn";
 import { apiUrl } from "@/lib/api/authFetch";
@@ -97,7 +97,7 @@ function makeId() {
 export default function ChatbotPage() {
   const router = useRouter();
   const showToast = useToastStore((state) => state.show);
-  const addCourse = useCourseStore((state) => state.addCourse);
+  const { createCourse } = useCreateCourse();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
 
   const [loginOpen, setLoginOpen] = useState(false);
@@ -201,7 +201,7 @@ export default function ChatbotPage() {
   };
 
   const saveCourse = (course: CourseSuggestion) => {
-    const saved = addCourse(course);
+    const saved = createCourse(course);
     showToast("코스를 보관함에 저장했어요 🐾");
     router.push(`/schedule/course/${saved.id}`);
   };

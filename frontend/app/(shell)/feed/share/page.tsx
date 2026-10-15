@@ -8,9 +8,8 @@ import { Button } from "@/components/ui/Button";
 import { FeedEmptyState } from "@/components/feed/FeedEmptyState";
 import { ShareCourseSummary } from "@/components/feed/ShareCourseSummary";
 import { useMyPosts, useCreatePost } from "@/hooks/usePosts";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { useCourses } from "@/hooks/useCourses";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { usePetStore } from "@/stores/usePetStore";
 import { useToastStore } from "@/stores/useToastStore";
 import { buildPostInputFromCourse, findPostByCourseId } from "@/lib/feed";
@@ -35,11 +34,9 @@ function CourseShareToFeedPageInner() {
   const router = useRouter();
   const courseId = useSearchParams().get("courseId");
 
-  // 코스 상세에서 바로 넘어오지 않고 링크로 직접 들어와도 스토어가 목데이터만 들고 있지 않도록 동기화한다.
-  useSyncCoursesFromApi();
-  const course = useCourseStore(
-    (state) => state.courses.find((item) => item.id === courseId) ?? null
-  );
+  // 코스 상세에서 바로 넘어오지 않고 링크로 직접 들어와도 캐시가 비어 있으면 useCourses가 서버에서 받는다.
+  const { data: courses } = useCourses();
+  const course = courses?.find((item) => item.id === courseId) ?? null;
 
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   const hydrated = useAuthStore((state) => state.hydrated);

@@ -5,20 +5,19 @@ import { TopBar } from "@/components/shell/TopBar";
 import { TabPlaceholder } from "@/components/shell/TabPlaceholder";
 import { CourseCard } from "@/components/course/CourseCard";
 import { LoginRequiredGate } from "@/components/course/LoginRequiredGate";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_SCHEDULES, useSchedules } from "@/hooks/useSchedules";
+import { useCourses } from "@/hooks/useCourses";
 
 export default function CourseVaultPage() {
   const router = useRouter();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
-  useSyncCoursesFromApi();
-  const storeCourses = useCourseStore((state) => state.courses);
-  const hasSynced = useCourseStore((state) => state.hasSynced);
-  const storeSchedules = useCourseStore((state) => state.schedules);
-  const courses = [...storeCourses].reverse();
+  const { data: apiCourses } = useCourses();
+  const hasSynced = apiCourses !== undefined;
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
+  const courses = [...(apiCourses ?? [])].reverse();
   const scheduleCountByCourse = new Map<string, number>();
-  for (const schedule of storeSchedules) {
+  for (const schedule of schedules) {
     scheduleCountByCourse.set(schedule.courseId, (scheduleCountByCourse.get(schedule.courseId) ?? 0) + 1);
   }
 

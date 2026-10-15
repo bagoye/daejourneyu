@@ -26,9 +26,9 @@ import {
   SOURCE_TONE,
 } from "@/lib/courseFormat";
 import { cn } from "@/lib/cn";
-import { useCourseStore } from "@/stores/useCourseStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useSyncCoursesFromApi } from "@/hooks/useSyncCoursesFromApi";
+import { NO_SCHEDULES, useSchedules } from "@/hooks/useSchedules";
+import { useCourses, useDeleteCourse, useUpdateCourse } from "@/hooks/useCourses";
 import { useSheetStore } from "@/stores/useSheetStore";
 import type { CourseStop } from "@/types";
 
@@ -47,13 +47,12 @@ const EMOJI_CHOICES = [
 export default function CourseDetailPage({ params }: { params: { courseId: string } }) {
   const router = useRouter();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
-  useSyncCoursesFromApi();
-  const courses = useCourseStore((state) => state.courses);
-  const hasSynced = useCourseStore((state) => state.hasSynced);
-  const updateCourse = useCourseStore((state) => state.updateCourse);
-  const deleteCourse = useCourseStore((state) => state.deleteCourse);
-  const schedules = useCourseStore((state) => state.schedules);
-  const course = courses.find((item) => item.id === params.courseId);
+  const { data: courses } = useCourses();
+  const hasSynced = courses !== undefined;
+  const { mutate: updateCourse } = useUpdateCourse();
+  const { mutate: deleteCourse } = useDeleteCourse();
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
+  const course = courses?.find((item) => item.id === params.courseId);
   const courseSchedules = schedules
     .filter((item) => item.courseId === params.courseId)
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -81,7 +80,7 @@ export default function CourseDetailPage({ params }: { params: { courseId: strin
   }
 
   if (!course) {
-    // 로그인 직후엔 courses가 아직 mockCourses(초기값)일 수 있어, 실제로 존재하는 코스인데도
+    // 로그인 직후엔 courses가 아직 undefined(첫 응답 전)일 수 있어, 실제로 존재하는 코스인데도
     // 서버 목록이 도착하기 전이라 "찾을 수 없음"으로 오판할 수 있다 — 동기화가 끝난 뒤에만 진짜로 없다고 안내한다.
     if (!hasSynced) {
       return (
@@ -140,7 +139,7 @@ export default function CourseDetailPage({ params }: { params: { courseId: strin
 
   const saveEditMode = () => {
     if (draftLabel.trim().length === 0 || draftDays.every((day) => day.length === 0)) return;
-    updateCourse(course.id, { label: draftLabel.trim(), emoji: draftEmoji, days: draftDays });
+    updateCourse({ courseId: course.id, patch: { label: draftLabel.trim(), emoji: draftEmoji, days: draftDays } });
     setEditMode(false);
   };
 

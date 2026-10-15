@@ -7,7 +7,8 @@ import { Tag } from "@/components/ui/Tag";
 import { BottomSheet } from "@/components/ui/BottomSheet";
 import { cn } from "@/lib/cn";
 import { nightsLabel } from "@/lib/courseFormat";
-import { useCourseStore } from "@/stores/useCourseStore";
+import { NO_SCHEDULES, useCreateSchedule, useSchedules } from "@/hooks/useSchedules";
+import { NO_COURSES, useCourses } from "@/hooks/useCourses";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useToastStore } from "@/stores/useToastStore";
 import type { CourseSource } from "@/types";
@@ -40,9 +41,9 @@ function toYmd(year: number, month0: number, day: number) {
  */
 export function ScheduleCalendar({ initialDate }: { initialDate?: string }) {
   const router = useRouter();
-  const courses = useCourseStore((state) => state.courses);
-  const schedules = useCourseStore((state) => state.schedules);
-  const addSchedule = useCourseStore((state) => state.addSchedule);
+  const { data: courses = NO_COURSES } = useCourses();
+  const { data: schedules = NO_SCHEDULES } = useSchedules();
+  const { mutateAsync: addSchedule } = useCreateSchedule();
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   const showToast = useToastStore((state) => state.show);
   const today = new Date();
@@ -58,7 +59,7 @@ export function ScheduleCalendar({ initialDate }: { initialDate?: string }) {
   const handleAddToSelectedDate = async (courseId: string) => {
     setAddingCourseId(courseId);
     try {
-      await addSchedule(courseId, selectedDate);
+      await addSchedule({ courseId, date: selectedDate });
       showToast(`${selectedDate}에 일정을 추가했어요`);
       setPickerOpen(false);
     } catch {

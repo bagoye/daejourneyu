@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchReviewTagsApi } from "@/lib/api/reviews";
 import { mockReviewTags } from "@/mocks";
+import { queryKeys } from "@/lib/queryKeys";
 
 /**
  * 후기 작성 화면의 태그 사전(GET /api/reviews/tags). root CLAUDE.md에 적혀 있듯 로컬 DB는
@@ -9,7 +10,7 @@ import { mockReviewTags } from "@/mocks";
  */
 export function useReviewTags() {
   return useQuery({
-    queryKey: ["review-tags"],
+    queryKey: queryKeys.reviewTags.all,
     queryFn: async () => {
       try {
         return await fetchReviewTagsApi();

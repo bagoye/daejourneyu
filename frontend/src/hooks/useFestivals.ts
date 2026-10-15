@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { FestivalEvent } from "@/types";
 import { apiUrl } from "@/lib/api/authFetch";
 import { mockFestivals } from "@/mocks";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface FestivalApiItem {
   id: string;
@@ -50,7 +51,7 @@ async function fetchGeneralFestivals(): Promise<FestivalEvent[]> {
 export function useFestivals() {
   const petFriendlyMock = mockFestivals.filter((festival) => festival.petFriendly);
   const query = useQuery({
-    queryKey: ["festivals", "general"],
+    queryKey: queryKeys.festivals.general,
     queryFn: fetchGeneralFestivals,
     staleTime: 60 * 60 * 1000,
     retry: 1,

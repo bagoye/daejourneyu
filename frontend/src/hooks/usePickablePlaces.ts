@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { PickablePlace } from "@/lib/petTourMapper";
 import { apiUrl } from "@/lib/api/authFetch";
+import { queryKeys } from "@/lib/queryKeys";
 
 async function fetchPickablePlaces(): Promise<PickablePlace[]> {
   const res = await fetch(apiUrl("/api/places"));
@@ -17,7 +18,7 @@ async function fetchPickablePlaces(): Promise<PickablePlace[]> {
  */
 export function usePickablePlaces(enabled = true) {
   return useQuery({
-    queryKey: ["pickable-places"],
+    queryKey: queryKeys.pickablePlaces.all,
     queryFn: fetchPickablePlaces,
     staleTime: 30 * 60 * 1000,
     retry: 1,
