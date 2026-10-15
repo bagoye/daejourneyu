@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { TopBar } from "@/components/shell/TopBar";
+import { LoadErrorState } from "@/components/shell/LoadErrorState";
 import { CourseButton as Button } from "@/components/course/CourseButton";
 import { Card } from "@/components/ui/Card";
 import { LoginRequiredGate } from "@/components/course/LoginRequiredGate";
@@ -21,12 +22,10 @@ export default function CourseScheduleAddPage({ params }: { params: { courseId: 
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   const showToast = useToastStore((state) => state.show);
 
-  const { data: courses } = useCourses();
+  const { data: courses, isError: coursesFailed, refetch: refetchCourses } = useCourses();
   const course = courses?.find((c) => c.id === params.courseId);
   const { data: schedules = NO_SCHEDULES } = useSchedules();
-  // .filter().sort()를 셀렉터 안에서 바로 하면 store가 갱신될 때마다(구독 중인 다른 필드가
-  // 바뀌어도) 매번 새 배열을 만들어 불필요한 리렌더를 유발한다 — schedules 값 자체가 바뀔 때만
-  // 다시 계산한다.
+  // 렌더마다 .filter().sort()로 새 배열을 만들지 않도록 schedules 값 자체가 바뀔 때만 다시 계산한다.
   const courseSchedules = useMemo(
     () => schedules.filter((s) => s.courseId === params.courseId).sort((a, b) => a.date.localeCompare(b.date)),
     [schedules, params.courseId]
@@ -42,6 +41,20 @@ export default function CourseScheduleAddPage({ params }: { params: { courseId: 
       <>
         <TopBar title="일정 추가" showBack />
         <LoginRequiredGate message="일정을 등록하려면 로그인해주세요" />
+      </>
+    );
+  }
+
+  // 코스 목록을 아직 못 받았으면 "찾을 수 없음"으로 단정하지 않는다 — 로딩 중이거나 실패한 것이다.
+  if (!courses) {
+    return (
+      <>
+        <TopBar title="일정 추가" showBack />
+        {coursesFailed ? (
+          <LoadErrorState message="코스를 불러오지 못했어요" onRetry={() => void refetchCourses()} />
+        ) : (
+          <div className="py-16 text-center text-xs text-ink-muted">불러오는 중…</div>
+        )}
       </>
     );
   }

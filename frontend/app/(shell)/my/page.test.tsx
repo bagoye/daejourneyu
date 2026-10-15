@@ -73,7 +73,8 @@ describe("마이 — 세션 복구 전", () => {
     render(<MyPage />);
 
     expect(screen.queryByText("로그인 / 회원가입")).toBeNull();
-    expect(screen.queryAllByRole("button", { name: "로그아웃" })).toHaveLength(1); // 모달 버튼뿐
+    // 닫힌 로그아웃 모달은 aria-hidden이라 버튼으로 잡히지 않는다 — 메뉴의 로그아웃도 없어야 한다.
+    expect(screen.queryAllByRole("button", { name: "로그아웃" })).toHaveLength(0);
   });
 });
 

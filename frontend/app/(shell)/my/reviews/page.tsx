@@ -7,6 +7,7 @@ import { Tag } from "@/components/ui/Tag";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { FeedPager } from "@/components/feed/FeedPager";
+import { LoadErrorState } from "@/components/shell/LoadErrorState";
 import { useReviews, useDeleteReview } from "@/hooks/useReviews";
 import { useToastStore } from "@/stores/useToastStore";
 import { paginate } from "@/lib/feed";
@@ -15,7 +16,8 @@ import { paginate } from "@/lib/feed";
 const REVIEWS_PER_PAGE = 4;
 
 export default function MyReviewsPage() {
-  const { data: reviews = [], isLoading } = useReviews();
+  const { data, isLoading, isError, refetch } = useReviews();
+  const reviews = useMemo(() => data ?? [], [data]);
   const deleteReview = useDeleteReview();
   const showToast = useToastStore((state) => state.show);
 
@@ -43,6 +45,8 @@ export default function MyReviewsPage() {
       <div className="flex flex-col gap-2.5 px-4 pb-6 pt-3">
         {isLoading ? (
           <div className="py-10 text-center text-xs text-ink-muted">불러오는 중…</div>
+        ) : isError && !data ? (
+          <LoadErrorState message="후기를 불러오지 못했어요" onRetry={() => void refetch()} />
         ) : myReviews.length === 0 ? (
           <div className="py-10 text-center text-xs text-ink-muted">
             아직 작성한 후기가 없어요. 장소 상세에서 후기를 남겨보세요.
@@ -61,7 +65,7 @@ export default function MyReviewsPage() {
                   <button
                     type="button"
                     onClick={() => setPendingDeleteId(review.id)}
-                    aria-label="이 후기 삭제"
+                    aria-label={`${review.placeName} 후기 삭제`}
                     className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface text-[13px] text-ink-muted transition-colors hover:bg-accent-coral hover:text-white"
                   >
                     ✕
