@@ -207,3 +207,4 @@ Index Scan Backward using "Post_saves_createdAt_id_idx" on "Post" (rows=510 추�
 - **내 코스 보관함**은 SQL이 1ms 미만이지만 헤비 유저(504개)는 응답 494KB · 약 60ms — 페이지네이션이 없다.
 - 운영 Supabase의 JIT·통계 설정은 확인하지 않았다. 기본값(jit=on)이면 개선 전 검색은 운영에서도 같은 JIT 비용을 냈을 것이다 [추정].
 - prepared statement의 generic plan은 측정하지 않았다(5회 실행 뒤 generic plan으로 바뀔 수 있음) [미검증].
+  → **10 §5에서 확인**: 직접 접속에서 검색 count가 generic plan으로 바뀌어 2글자 검색어가 126 → 223ms. 검색 count만 custom plan을 강제해 수정했다(운영 `pgbouncer=true`는 원래 영향 없음).

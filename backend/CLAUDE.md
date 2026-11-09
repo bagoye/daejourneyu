@@ -22,6 +22,7 @@ src/
 └─ routes/           도메인별 라우터. 파일 하나 = 도메인 하나
 test/integration/    실제 PostgreSQL 통합 테스트(npm run test:int)
 scripts/perf/        대량 데이터 시드·실행계획·pgbench
+scripts/load/        k6 부하 시나리오·성능 회귀 게이트(perf-gate.sh → compare.mjs, CI: .github/workflows/perf.yml)
 scripts/ops/         커넥션 풀 측정·정합성 점검·사용자 선택 복구·최소 권한 역할
 ```
 

@@ -1,0 +1,96 @@
+# 성능 회귀 게이트 — 백엔드가 바뀐 PR마다 base(PR 대상 브랜치)와 head(PR)를 **같은 러너에서 번갈아** 부하 측정해
+# 엔드포인트별 p95를 비교한다. 기준: +25% 그리고 +5ms를 넘으면 실패(A/A 실험으로 정함 — docs/db-optimization/10).
+# 결과 표는 Actions 실행 요약(Summary)에 나오고, k6 원본 JSON·서버 로그는 아티팩트로 남는다.
+#
+# 데이터는 seed-large.sql(setseed 고정)로 만든 합성 데이터 10만 건(scale=1)이다. 실제 사용자 데이터는 쓰지 않는다.
+# scale=0.1(1만 건)에서는 플래너가 인덱스를 거의 쓰지 않아 인덱스 삭제 회귀를 놓쳤다(실측) — 그래서 1로 둔다.
+name: Perf gate
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/perf.yml"
+  workflow_dispatch:
+    inputs:
+      aa:
+        description: "A/A 실험(head끼리 비교해 잡음 폭 측정 — 기준 재보정용)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: postgres
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      PG_URL: postgresql://test:test@127.0.0.1:54329
+      SCALE: "1"
+      ROUNDS: "3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: "0.54.0"
+      - name: psql 클라이언트
+        run: command -v psql || (sudo apt-get update && sudo apt-get install -y postgresql-client)
+
+      - name: head 의존성
+        working-directory: backend
+        run: npm ci
+
+      # base는 PR 대상 브랜치의 그 시점 커밋을 별도 작업 트리로 꺼낸다(자기 마이그레이션·시드·코드로 측정).
+      - name: base 작업 트리
+        id: base
+        if: github.event_name == 'pull_request' && !inputs.aa
+        run: |
+          git worktree add ../perf-base "${{ github.event.pull_request.base.sha }}"
+          if [ -f ../perf-base/backend/scripts/perf/seed-large.sql ]; then
+            (cd ../perf-base/backend && npm ci)
+            echo "dir=$(cd ../perf-base/backend && pwd)" >> "$GITHUB_OUTPUT"
+          else
+            echo "base에 부하 측정 도구가 없어 head 절대 기준만 검사한다." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 성능 게이트
+        working-directory: backend
+        env:
+          BASE_DIR: ${{ steps.base.outputs.dir }}
+        run: |
+          if [ "${{ inputs.aa }}" = "true" ]; then export BASE_DIR="$PWD"; fi
+          bash scripts/load/perf-gate.sh
+
+      - name: 결과 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-${{ github.run_id }}
+          path: backend/perf-out/
+          retention-days: 14
