@@ -198,7 +198,7 @@ describe("GET /api/posts", () => {
     );
   });
 
-  it("커서가 가리키는 글이 지워졌으면 목록의 끝으로 처리한다", async () => {
+  it("예전 형식(글 id) 커서가 가리키는 글이 지워졌으면 위치를 알 수 없어 목록의 끝으로 처리한다", async () => {
     prisma.post.findUnique.mockResolvedValue(null);
 
     const res = await request(app).get("/api/posts?cursor=gone");
@@ -207,24 +207,62 @@ describe("GET /api/posts", () => {
     expect(prisma.post.findMany).not.toHaveBeenCalled();
   });
 
-  it("커서 다음부터 이어 받고, 이어 받을 때는 전체 건수를 세지 않는다", async () => {
-    prisma.post.findUnique.mockResolvedValue({ id: "post-9" });
+  it("요청한 만큼 꽉 채워 왔으면 마지막 글의 정렬 값을 담은 커서를 준다", async () => {
+    const createdAt = new Date("2026-08-12T09:00:00.000Z");
+    prisma.post.findMany.mockResolvedValue([postRow({ id: "a" }), postRow({ id: "b", saves: 7, createdAt })]);
 
-    const res = await request(app).get("/api/posts?cursor=post-9");
+    const res = await request(app).get("/api/posts?limit=2");
 
+    expect(res.body.nextCursor).toMatch(/^v1./);
+    const decoded = JSON.parse(Buffer.from(res.body.nextCursor.slice(3), "base64url").toString("utf8"));
+    expect(decoded).toEqual([7, createdAt.toISOString(), "b"]);
+  });
+
+  it("값 커서로 이어 받으면 커서 글을 다시 읽지 않고 (saves, createdAt, id)보다 뒤를 고르며, 전체 건수는 세지 않는다", async () => {
+    const createdAt = new Date("2026-08-12T09:00:00.000Z");
+    const cursor = "v1." + Buffer.from(JSON.stringify([7, createdAt.toISOString(), "b"])).toString("base64url");
+
+    const res = await request(app).get(`/api/posts?cursor=${cursor}`);
+
+    expect(prisma.post.findUnique).not.toHaveBeenCalled();
     expect(prisma.post.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ cursor: { id: "post-9" }, skip: 1 })
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              OR: [
+                { saves: { lt: 7 } },
+                { saves: 7, createdAt: { lt: createdAt } },
+                { saves: 7, createdAt, id: { lt: "b" } },
+              ],
+            },
+          ],
+        },
+      })
     );
+    expect(prisma.post.findMany.mock.calls[0][0]).not.toHaveProperty("cursor");
     expect(prisma.post.count).not.toHaveBeenCalled();
     expect(res.body).not.toHaveProperty("total");
   });
 
-  it("요청한 만큼 꽉 채워 왔으면 마지막 글 id를 다음 커서로 준다", async () => {
-    prisma.post.findMany.mockResolvedValue([postRow({ id: "a" }), postRow({ id: "b" })]);
+  it("예전 id 커서는 그 글의 현재 값으로 바꿔 이어 받는다(이미 발급된 커서 호환)", async () => {
+    const createdAt = new Date("2026-08-12T09:00:00.000Z");
+    prisma.post.findUnique.mockResolvedValue({ id: "post-9", saves: 2, createdAt });
 
-    const res = await request(app).get("/api/posts?limit=2");
+    await request(app).get("/api/posts?sort=recent&cursor=post-9");
 
-    expect(res.body.nextCursor).toBe("b");
+    expect(prisma.post.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { AND: [{ OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: "post-9" } }] }] },
+      })
+    );
+  });
+
+  it("정렬과 모양이 맞지 않는 커서는 400", async () => {
+    // 최신순 커서(2칸)를 담긴순 목록에 보낸 경우
+    const recentCursor = "v1." + Buffer.from(JSON.stringify(["2026-08-12T09:00:00.000Z", "b"])).toString("base64url");
+    expect((await request(app).get(`/api/posts?cursor=${recentCursor}`)).status).toBe(400);
+    expect((await request(app).get("/api/posts?cursor=v1.%%%")).status).toBe(400);
   });
 });
 

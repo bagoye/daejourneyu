@@ -21,6 +21,7 @@ import {
 } from "@/lib/api/posts";
 import { usePetStore } from "@/stores/usePetStore";
 import { queryKeys } from "@/lib/queryKeys";
+import { dedupeById } from "@/lib/dedupeById";
 
 /** 무한 스크롤 한 번에 받아오는 개수. 카드가 커서 한 화면에 3~4장이라 10장이면 두 화면 남짓. */
 const PAGE_SIZE = 10;
@@ -105,8 +106,9 @@ export function useFeedPosts({
     refetchOnWindowFocus: false,
   });
 
+  // 담긴순은 페이지 사이에 다른 글의 담긴 수가 바뀌면 같은 글이 다음 페이지에 다시 실려 올 수 있다 — id로 거른다.
   const data = useMemo<FeedPost[]>(
-    () => (query.data?.pages ?? []).flatMap((page) => page.items).map(decorate),
+    () => dedupeById((query.data?.pages ?? []).flatMap((page) => page.items)).map(decorate),
     [query.data, decorate]
   );
 

@@ -4,6 +4,13 @@ import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
 import { asyncHandler } from "../lib/asyncHandler";
+import {
+  cursorDate,
+  decodeCursor,
+  encodeCursor,
+  InvalidCursorError,
+  type CursorValue,
+} from "../lib/cursor";
 
 type PostStop = {
   placeId: string;
@@ -163,22 +170,71 @@ function buildSearchWhere(keyword: string): Prisma.PostWhereInput {
   };
 }
 
+type PostSort = "recent" | "saves";
+
+const POST_CURSOR_SHAPE: Record<PostSort, ("string" | "number")[]> = {
+  recent: ["string", "string"], // createdAt(ISO), id
+  saves: ["number", "string", "string"], // saves, createdAt(ISO), id
+};
+
+function postCursorValues(sort: PostSort, row: { id: string; saves: number; createdAt: Date }): CursorValue[] {
+  const createdAt = row.createdAt.toISOString();
+  return sort === "recent" ? [createdAt, row.id] : [row.saves, createdAt, row.id];
+}
+
+/** 값 커서면 그대로, 예전 id 커서면 그 글의 현재 값으로 바꾼다. id 커서의 글이 없으면 null. */
+async function resolvePostCursor(raw: string, sort: PostSort): Promise<CursorValue[] | null> {
+  const values = decodeCursor(raw, POST_CURSOR_SHAPE[sort]);
+  if (values) return values;
+  const row = await prisma.post.findUnique({
+    where: { id: raw },
+    select: { id: true, saves: true, createdAt: true },
+  });
+  return row ? postCursorValues(sort, row) : null;
+}
+
+/**
+ * 내림차순 정렬에서 "커서보다 뒤" 조건. 튜플 비교 (a, b, c) < (a0, b0, c0)를 OR로 풀어 쓴 형태다.
+ * (PostgreSQL의 row-value 비교가 인덱스 범위 검색에 더 유리할 수 있다 — 03에서 실행계획으로 비교한다.)
+ */
+function afterPostCursor(sort: PostSort, values: CursorValue[]): Prisma.PostWhereInput {
+  if (sort === "recent") {
+    const [createdAt, id] = [cursorDate(values[0]!), String(values[1])];
+    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  }
+  const [saves, createdAt, id] = [Number(values[0]), cursorDate(values[1]!), String(values[2])];
+  return {
+    OR: [
+      { saves: { lt: saves } },
+      { saves, createdAt: { lt: createdAt } },
+      { saves, createdAt, id: { lt: id } },
+    ],
+  };
+}
+
 /**
  * GET /api/posts — 둘러보기 목록. 비로그인도 볼 수 있고, 로그인했으면 내 글에 isMine이 붙는다.
  *
  * 검색·유형 필터·정렬을 전부 여기서 처리한다. 예전에는 전체를 내려주고 화면이 걸렀는데,
  * 글이 늘면 그대로 무너지는 구조라 서버로 옮겼다.
  *
- * 페이지네이션은 offset이 아니라 **커서**다 — 담긴순 목록은 순서가 계속 바뀌어서 offset을 쓰면
- * 스크롤 도중 같은 글이 두 번 나오거나 건너뛰어진다. 커서는 마지막 항목의 id이고,
- * 정렬 키에 항상 id를 섞어 순서를 확정한다(동점이어도 페이지 경계가 흔들리지 않게).
+ * 페이지네이션은 offset이 아니라 **값 기반 커서**다(lib/cursor.ts). 커서에는 마지막 항목의 정렬 키
+ * 값(담긴순: saves·createdAt·id, 최신순: createdAt·id)이 담기고, 다음 페이지는 "그 값보다 뒤"를 조건으로
+ * 고른다. 정렬 키 끝에 항상 id를 붙여 동점이어도 순서가 확정된다.
+ *
+ * 예전 커서(글 id)는 Prisma `cursor: { id }`로 커서 행의 **현재** 값을 다시 읽었기 때문에, 커서 글이
+ * 지워지면 목록이 거기서 끝났고(나머지 누락), 커서 글의 담긴 수가 바뀌면 이미 본 글이 다시 나왔다.
+ * 이미 발급된 id 커서는 계속 받아준다(그 글의 현재 값을 읽어 값 커서로 바꿔 쓴다).
+ *
+ * 남는 한계: 담긴순에서 **다른** 글의 담긴 수가 페이지 사이에 바뀌면 그 글은 경계를 넘어 중복·누락될 수 있다.
+ * 정렬 기준 자체가 변하는 값이라 생기는 문제라 서버 커서로는 없앨 수 없고, 화면이 id로 중복을 걸러낸다.
  */
 router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const keyword = firstQueryValue(req.query.q)?.trim();
   const sameTypeName = firstQueryValue(req.query.sameType)?.trim();
-  const sort = firstQueryValue(req.query.sort) === "recent" ? "recent" : "saves";
+  const sort: PostSort = firstQueryValue(req.query.sort) === "recent" ? "recent" : "saves";
   const mine = firstQueryValue(req.query.mine) === "true";
-  const cursor = firstQueryValue(req.query.cursor);
+  const rawCursor = firstQueryValue(req.query.cursor);
   const limit = parseLimit(firstQueryValue(req.query.limit));
 
   if (mine && !req.userId) {
@@ -190,30 +246,39 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   if (keyword) filters.push(buildSearchWhere(keyword));
   // 검색 중에는 유형 필터를 무시한다 — 검색은 항상 전체 코스를 훑는다(프로토타입 동작 유지).
   if (!keyword && sameTypeName) filters.push({ petTypeName: sameTypeName });
-
-  // 커서 글이 지워졌으면 Prisma가 던지므로, 조용히 목록의 끝으로 처리한다.
-  if (cursor) {
-    const alive = await prisma.post.findUnique({ where: { id: cursor }, select: { id: true } });
-    if (!alive) return res.json({ items: [], nextCursor: null });
-  }
-
+  // 전체 건수는 커서 조건을 뺀 필터로 센다.
   const where = filters.length > 0 ? { AND: filters } : undefined;
 
+  if (rawCursor) {
+    let cursorValues: CursorValue[] | null;
+    try {
+      cursorValues = await resolvePostCursor(rawCursor, sort);
+    } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return res.status(400).json({ error: "목록 위치 정보가 올바르지 않아요" });
+      }
+      throw err;
+    }
+    // 예전 형식(id) 커서가 가리키는 글이 지워졌으면 위치를 알 수 없어 목록의 끝으로 처리한다.
+    if (!cursorValues) return res.json({ items: [], nextCursor: null });
+    filters.push(afterPostCursor(sort, cursorValues));
+  }
+
   const rows = await prisma.post.findMany({
-    where,
+    where: filters.length > 0 ? { AND: filters } : undefined,
     orderBy:
       sort === "recent"
         ? [{ createdAt: "desc" }, { id: "desc" }]
         : [{ saves: "desc" }, { createdAt: "desc" }, { id: "desc" }],
     take: limit,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     include: postWithRelations,
   });
 
   // 마지막 페이지인지는 "요청한 만큼 채워 왔는가"로 판단한다. 딱 떨어지면 다음 요청이 빈 배열로 끝난다.
-  const nextCursor = rows.length === limit ? rows[rows.length - 1]!.id : null;
+  const last = rows[rows.length - 1];
+  const nextCursor = rows.length === limit && last ? encodeCursor(postCursorValues(sort, last)) : null;
   // 전체 건수는 첫 페이지에서만 센다 — 검색 결과 개수를 보여주는 용도라 이어 받을 때는 필요 없다.
-  const total = cursor ? undefined : await prisma.post.count({ where });
+  const total = rawCursor ? undefined : await prisma.post.count({ where });
 
   const savedPostIds = await loadSavedPostIds(req.userId, rows.map((row) => row.id));
 

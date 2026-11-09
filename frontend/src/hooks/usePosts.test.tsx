@@ -92,6 +92,21 @@ describe("useFeedPosts", () => {
     expect(result.current.total).toBe(3);
   });
 
+  it("담긴순에서 같은 글이 다음 페이지에 다시 실려 와도 한 번만 보여준다", async () => {
+    // 첫 페이지를 받은 뒤 b의 담긴 수가 줄어 다음 페이지 범위로 내려간 상황
+    vi.mocked(fetchPostsApi)
+      .mockResolvedValueOnce({ items: [makeApiPost({ id: "a" }), makeApiPost({ id: "b" })], nextCursor: "v1.x", total: 3 })
+      .mockResolvedValueOnce({ items: [makeApiPost({ id: "b" }), makeApiPost({ id: "c" })], nextCursor: null });
+
+    const { result } = renderWithClient(() => useFeedPosts());
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await act(async () => {
+      await result.current.fetchNextPage();
+    });
+
+    await waitFor(() => expect(result.current.data.map((post) => post.id)).toEqual(["a", "b", "c"]));
+  });
+
   it("검색 중에는 유형 필터를 켜도 유형을 보내지 않는다", async () => {
     vi.mocked(fetchPostsApi).mockResolvedValue({ items: [], nextCursor: null, total: 0 });
 
