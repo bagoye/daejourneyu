@@ -1,0 +1,63 @@
+# postgres_exporter 기본 지표에 없는 것만 추가한다(아카이브 실패, 복제 지연 바이트, standby 재생 상태).
+# exporter 계정은 pg_monitor 권한만 있으므로 여기서도 통계 뷰·함수만 읽는다.
+
+pg_archiver:
+  query: |
+    SELECT archived_count, failed_count,
+           COALESCE(EXTRACT(EPOCH FROM (now() - last_archived_time)), 0) AS seconds_since_last_archive
+    FROM pg_stat_archiver
+  metrics:
+    - archived_count:
+        usage: COUNTER
+        description: "보관에 성공한 WAL 세그먼트 수"
+    - failed_count:
+        usage: COUNTER
+        description: "archive_command 실패 횟수 — 늘어나면 WAL이 pg_wal에 쌓여 디스크가 찬다"
+    - seconds_since_last_archive:
+        usage: GAUGE
+        description: "마지막 보관 이후 경과 초"
+
+pg_replication_sender:
+  query: |
+    SELECT application_name,
+           pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS replay_lag_bytes,
+           COALESCE(EXTRACT(EPOCH FROM replay_lag), 0) AS replay_lag_seconds
+    FROM pg_stat_replication
+  metrics:
+    - application_name:
+        usage: LABEL
+        description: "standby 이름"
+    - replay_lag_bytes:
+        usage: GAUGE
+        description: "primary 현재 WAL 위치 - standby 재생 위치(바이트). 장애 전환 시 잃을 수 있는 양"
+    - replay_lag_seconds:
+        usage: GAUGE
+        description: "standby 재생 지연(초)"
+
+pg_xact:
+  # exporter 내장 long_running_transactions 지표는 트랜잭션 나이를 재지 않았다(실제 14초인데 1.2초로 표시 — 09 문서).
+  # xact_start로 직접 계산한다.
+  query: |
+    SELECT COALESCE(MAX(EXTRACT(EPOCH FROM clock_timestamp() - xact_start)), 0) AS oldest_seconds,
+           count(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_transaction
+    FROM pg_stat_activity
+    WHERE backend_type = 'client backend' AND xact_start IS NOT NULL AND pid <> pg_backend_pid()
+  metrics:
+    - oldest_seconds:
+        usage: GAUGE
+        description: "가장 오래 열린 트랜잭션의 나이(초)"
+    - idle_in_transaction:
+        usage: GAUGE
+        description: "트랜잭션을 연 채 아무것도 안 하는 세션 수"
+
+pg_standby:
+  query: |
+    SELECT pg_is_in_recovery()::int AS in_recovery,
+           CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused()::int ELSE 0 END AS replay_paused
+  metrics:
+    - in_recovery:
+        usage: GAUGE
+        description: "1이면 standby"
+    - replay_paused:
+        usage: GAUGE
+        description: "1이면 WAL 재생 일시정지"

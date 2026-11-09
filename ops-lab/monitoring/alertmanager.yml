@@ -1,0 +1,9 @@
+# 실습에서는 외부로 보내지 않는다(Alertmanager UI/API에서 확인). 운영에서는 receivers에 Slack·이메일 등을 연결한다.
+route:
+  receiver: "null"
+  group_by: ["alertname", "role"]
+  group_wait: 0s
+  group_interval: 10s
+  repeat_interval: 1h
+receivers:
+  - name: "null"

@@ -1,0 +1,152 @@
+# DB 모니터링·알림 실습 — primary + standby(복제) + WAL 아카이빙을 postgres_exporter → Prometheus(알림 규칙) → Alertmanager,
+# Grafana 대시보드로 본다. 다른 실습과 분리된 별도 프로젝트다.
+#
+#   docker compose -f ops-lab/monitoring/docker-compose.yml up -d --wait
+#   bash ops-lab/scripts/monitoring-drill.sh       # 장애 주입 → 알림 감지 시간 측정
+#   Grafana http://127.0.0.1:3001 (admin / lab) · Prometheus http://127.0.0.1:9090 · Alertmanager http://127.0.0.1:9093
+#   docker compose -f ops-lab/monitoring/docker-compose.yml down -v
+#
+# 계정은 실습용 값이다.
+name: djy-monitoring
+
+x-pg: &pg
+  image: postgres:16-bookworm
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d daejourneyu"]
+    interval: 2s
+    timeout: 3s
+    retries: 60
+
+services:
+  primary:
+    <<: *pg
+    container_name: djy-mon-primary
+    hostname: primary
+    depends_on:
+      archive-perms:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: daejourneyu
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - track_io_timing=on
+    volumes:
+      - mon-primary:/var/lib/postgresql/data
+      - mon-archive:/wal-archive
+      - ./init-primary.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    ports:
+      - "127.0.0.1:54334:5432"
+
+  archive-perms:
+    image: postgres:16-bookworm
+    entrypoint: ["sh", "-c", "chown -R postgres:postgres /wal-archive"]
+    volumes:
+      - mon-archive:/wal-archive
+    restart: "no"
+
+  standby:
+    <<: *pg
+    container_name: djy-mon-standby
+    hostname: standby
+    user: postgres
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: replpass
+      PGDATA: /var/lib/postgresql/data
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          pg_basebackup -h primary -U replicator -D "$$PGDATA" -R -X stream -C -S standby1 -c fast
+          chmod 700 "$$PGDATA"
+        fi
+        exec postgres -c hot_standby=on -c shared_preload_libraries=pg_stat_statements
+    volumes:
+      - mon-standby:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:54335:5432"
+
+  exporter-primary:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: djy-mon-exporter-primary
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      # connect_timeout을 수집 제한 시간(5초)보다 짧게 — DB가 죽었을 때 수집이 실패하지 않고 pg_up=0을 보고하게
+      DATA_SOURCE_NAME: postgresql://exporter:exporterpass@primary:5432/daejourneyu?sslmode=disable&connect_timeout=2
+    command:
+      - --collector.stat_statements
+      - --extend.query-path=/etc/exporter/queries.yaml
+    volumes:
+      - ./exporter-queries.yaml:/etc/exporter/queries.yaml:ro
+
+  exporter-standby:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: djy-mon-exporter-standby
+    depends_on:
+      standby:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: postgresql://exporter:exporterpass@standby:5432/daejourneyu?sslmode=disable&connect_timeout=2
+    command:
+      - --extend.query-path=/etc/exporter/queries.yaml
+    volumes:
+      - ./exporter-queries.yaml:/etc/exporter/queries.yaml:ro
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: djy-mon-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: djy-mon-alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:9093:9093"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: djy-mon-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: lab
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+
+volumes:
+  mon-primary:
+  mon-standby:
+  mon-archive:
