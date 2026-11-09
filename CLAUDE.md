@@ -61,6 +61,12 @@ DB를 다시 띄운 뒤 백엔드를 재시작할 필요는 없다 — Prisma가
   `*.test.tsx`는 jsdom + Testing Library(컴포넌트·페이지·훅). 픽스처는 `src/test/`에 있다.
 - **백엔드**: 라우트는 supertest로 실제 라우터를 태우되 `lib/prisma`·`lib/auth`를 mock해서
   DB·`JWT_SECRET` 없이 돈다(`src/routes/posts.test.ts` 참고).
+- **백엔드 통합 테스트**(`backend/test/integration/*.int.test.ts`): 실제 PostgreSQL 16에서 동시성·트랜잭션·
+  트리거·CASCADE를 검증한다. `npm run db:test:up`(Docker, 127.0.0.1:54329) → `.env.test.example`을 `.env.test`로
+  복사 → `npm run test:int`. 기본 `npm test`에는 포함되지 않으며, 원격 호스트를 가리키면 시작 전에 중단된다.
+  `prisma dev`(PGlite)는 단일 연결이라 동시성 재현에 쓰지 않는다. 설계 근거는 `docs/db-optimization/`.
+- `Post.saves`는 **DB 트리거가 유지**한다(`migrations/20261109000000_post_saves_counter_trigger`) — 앱에서 직접
+  증감하지 않는다. 쓰기 경로를 추가할 때는 잠금 순서 **Course → 하위 테이블(CourseDay·PostSave)**을 지킨다.
 
 변경 후에는 **`npm test`와 `npm run build`를 둘 다 통과시킨다.** 프론트 테스트 파일은 `next build`의
 타입 체크 대상이고, 백엔드 테스트 파일은 `tsconfig.json`에서 제외되어 `dist/`에 빌드되지 않는다.
