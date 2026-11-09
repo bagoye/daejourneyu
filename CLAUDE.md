@@ -19,8 +19,10 @@ daejourneyu/
 ├─ frontend/     Next.js 14 App Router + TS + Tailwind v4 + TanStack Query + Zustand + PWA
 │  ├─ CLAUDE.md  ← FE 작업 시 반드시 함께 읽을 것 (아키텍처·컨벤션·3인 분업표)
 │  └─ PLAN.md    ← 화면 인벤토리, 구조 결정 근거, 포팅 제외 화면 목록
-└─ backend/      Node.js + Express 4 + TS (스캐폴딩 단계)
-   └─ src/routes/  도메인별 라우터
+├─ backend/      Node.js + Express 4 + TS + Prisma + PostgreSQL
+│  └─ src/routes/  도메인별 라우터
+├─ ops-lab/      DB 운영 실습실(Docker, 54330) — PITR·보관 정책 훈련 스크립트. docs/db-optimization/06
+└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(01~06)
 ```
 
 ## 실행
