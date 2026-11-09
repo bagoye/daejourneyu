@@ -153,21 +153,47 @@ function firstQueryValue(raw: unknown): string | undefined {
 }
 
 /**
- * 검색 범위는 프론트가 쓰던 searchPosts와 맞춘다 — 코스 이름·한마디·작성자·태그·방문 장소명.
- * 태그만 부분일치가 아니라 정확일치인데, 태그 값이 "당일치기"·"자차"·"유성구"처럼 고정 어휘라
- * 부분일치가 필요한 자치구 검색은 stops.district가 대신 받는다(Postgres는 String[] 부분검색을 못 한다).
+ * 검색 범위는 서버 검색 이전 프론트의 searchPosts와 같다 — 코스 이름·한마디·작성자·태그·방문 장소명·자치구를
+ * 모두 부분일치·대소문자 무시로 찾는다.
+ *
+ * 전부 `Post.searchText` 한 컬럼(pg_trgm GIN 인덱스)에 모아 검색한다. 예전처럼 컬럼 3개 ILIKE + PostStop
+ * EXISTS 2개를 OR로 묶으면, OR 안의 서브쿼리 때문에 PostgreSQL이 인덱스를 쓰지 못해 Post·PostStop을 매번
+ * 전체 스캔했다(10만 건 기준 목록+건수 약 0.9초, 그중 대부분이 과대 추정된 비용 때문에 켜진 JIT 컴파일).
+ *
+ * 태그도 검색 문서에 넣었다. 예전의 태그 정확일치(tags @>)는 배열 부분검색이 안 돼서 생긴 우회책이었고,
+ * 통계에 없는 값을 500행으로 과대 추정해 "결과 없는 검색"마다 담기순 인덱스를 끝까지 훑게 만들었다(158ms).
+ * 근거·측정은 docs/db-optimization/03-query-performance.md.
  */
 function buildSearchWhere(keyword: string): Prisma.PostWhereInput {
-  return {
-    OR: [
-      { caption: { contains: keyword, mode: "insensitive" } },
-      { text: { contains: keyword, mode: "insensitive" } },
-      { authorName: { contains: keyword, mode: "insensitive" } },
-      { tags: { has: keyword } },
-      { stops: { some: { name: { contains: keyword, mode: "insensitive" } } } },
-      { stops: { some: { district: { contains: keyword, mode: "insensitive" } } } },
-    ],
-  };
+  return { searchText: { contains: escapeLikePattern(keyword), mode: "insensitive" } };
+}
+
+/**
+ * Prisma의 `contains`는 PostgreSQL에서 LIKE 와일드카드(%, _)를 이스케이프하지 않는다 — "50%"로 검색하면
+ * "500원"까지 걸렸다(통합 테스트로 확인, 예전 검색 코드에도 있던 문제). ILIKE의 기본 이스케이프 문자인
+ * 백슬래시로 감싸 글자 그대로 찾게 한다.
+ */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * 검색 문서. 필드 사이를 줄바꿈으로 이어, 한 줄짜리 검색어가 두 필드에 걸쳐 매칭되지 않게 한다
+ * (필드별로 따로 부분일치하던 예전 결과와 같다). 태그·PostStop은 글에 박제된 값이라 바뀌지 않고,
+ * 글에서 고칠 수 있는 caption·text가 바뀔 때마다 다시 만든다. 마이그레이션의 백필 SQL과 같은 형식이다
+ * (migrations/20261109010000_post_search_and_list_indexes).
+ */
+export function buildSearchText(
+  post: { caption: string; text: string; authorName: string; tags: string[] },
+  stops: { name: string; district: string }[]
+): string {
+  return [
+    post.caption,
+    post.text,
+    post.authorName,
+    ...post.tags,
+    ...stops.flatMap((s) => [s.name, s.district]),
+  ].join("\n");
 }
 
 type PostSort = "recent" | "saves";
@@ -194,20 +220,35 @@ async function resolvePostCursor(raw: string, sort: PostSort): Promise<CursorVal
 }
 
 /**
- * 내림차순 정렬에서 "커서보다 뒤" 조건. 튜플 비교 (a, b, c) < (a0, b0, c0)를 OR로 풀어 쓴 형태다.
- * (PostgreSQL의 row-value 비교가 인덱스 범위 검색에 더 유리할 수 있다 — 03에서 실행계획으로 비교한다.)
+ * 내림차순 정렬에서 "커서보다 뒤" 조건. 튜플 비교 (a, b, c) < (a0, b0, c0)를 OR로 풀어 쓴 형태에
+ * **선행 범위 조건**(a <= a0)을 AND로 덧붙인다.
+ *
+ * OR만 있으면 정렬 인덱스((createdAt, id) / (saves, createdAt, id))가 있어도 PostgreSQL이 범위 조건으로 쓰지
+ * 못하고 맨 앞부터 읽으며 필터로 버린다 — 9만 번째 글 이후 페이지에서 9만 행을 읽었다(5.7ms). 선행 조건이
+ * 있으면 Index Cond로 시작 위치를 잡는다(0.03ms). 의미는 같다(OR의 모든 항이 a <= a0를 함의).
+ * row-value 비교 `(a, b, c) < (...)`가 가장 정확하지만 Prisma 쿼리 빌더로는 표현할 수 없어 이 형태를 택했다.
  */
 function afterPostCursor(sort: PostSort, values: CursorValue[]): Prisma.PostWhereInput {
   if (sort === "recent") {
     const [createdAt, id] = [cursorDate(values[0]!), String(values[1])];
-    return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+    return {
+      AND: [
+        { createdAt: { lte: createdAt } },
+        { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] },
+      ],
+    };
   }
   const [saves, createdAt, id] = [Number(values[0]), cursorDate(values[1]!), String(values[2])];
   return {
-    OR: [
-      { saves: { lt: saves } },
-      { saves, createdAt: { lt: createdAt } },
-      { saves, createdAt, id: { lt: id } },
+    AND: [
+      { saves: { lte: saves } },
+      {
+        OR: [
+          { saves: { lt: saves } },
+          { saves, createdAt: { lt: createdAt } },
+          { saves, createdAt, id: { lt: id } },
+        ],
+      },
     ],
   };
 }
@@ -326,6 +367,7 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
       authorName: input.authorName,
       authorEmoji: input.authorEmoji,
       petTypeName: input.petTypeName,
+      searchText: buildSearchText(input, input.stops),
       userId: req.userId!,
       courseId: input.courseId ?? null,
       stops: { create: input.stops.map((stop, order) => ({ ...stop, order })) },
@@ -548,14 +590,24 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   }
   const input = req.body;
 
-  const existing = await prisma.post.findUnique({ where: { id: req.params.id } });
+  const existing = await prisma.post.findUnique({ where: { id: req.params.id }, include: postWithRelations });
   if (!existing || existing.userId !== req.userId) {
     return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
   }
 
+  const caption = input.caption?.trim() ?? existing.caption;
+  const text = input.text ?? existing.text;
   const updated = await prisma.post.update({
     where: { id: existing.id },
-    data: { caption: input.caption?.trim(), text: input.text },
+    data: {
+      caption,
+      text,
+      // 검색 문서도 같이 고친다 — 안 그러면 바뀐 제목으로 검색해도 안 나온다
+      searchText: buildSearchText(
+        { caption, text, authorName: existing.authorName, tags: existing.tags },
+        existing.stops
+      ),
+    },
     include: postWithRelations,
   });
 

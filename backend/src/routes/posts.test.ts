@@ -26,7 +26,7 @@ vi.mock("../lib/auth", () => ({
     token.startsWith("valid:") ? { userId: token.slice("valid:".length) } : null,
 }));
 
-import postsRouter from "./posts";
+import postsRouter, { buildSearchText } from "./posts";
 
 const AS_USER_1 = "daejourneyu_token=valid:user-1";
 const INCLUDE = { stops: { orderBy: { order: "asc" } } };
@@ -175,19 +175,28 @@ describe("GET /api/posts", () => {
     ]);
   });
 
-  it("검색어가 있으면 유형 필터를 무시하고 제목·소개·작성자·태그·장소를 훑는다", async () => {
+  it("검색어가 있으면 유형 필터를 무시하고, 검색 문서(제목·소개·작성자·태그·장소) 한 컬럼만 훑는다", async () => {
     await request(app).get("/api/posts?q=%20한빛탑%20&sameType=유형");
 
     const { where } = prisma.post.findMany.mock.calls[0][0];
-    expect(where.AND).toHaveLength(1);
-    expect(where.AND[0].OR).toEqual([
-      { caption: { contains: "한빛탑", mode: "insensitive" } },
-      { text: { contains: "한빛탑", mode: "insensitive" } },
-      { authorName: { contains: "한빛탑", mode: "insensitive" } },
-      { tags: { has: "한빛탑" } },
-      { stops: { some: { name: { contains: "한빛탑", mode: "insensitive" } } } },
-      { stops: { some: { district: { contains: "한빛탑", mode: "insensitive" } } } },
-    ]);
+    // 인덱스(pg_trgm)가 걸린 한 컬럼에 대한 부분일치 하나 — OR·서브쿼리가 없어야 플래너가 인덱스를 쓴다
+    expect(where).toEqual({ AND: [{ searchText: { contains: "한빛탑", mode: "insensitive" } }] });
+  });
+
+  it("검색어의 LIKE 와일드카드(%, _, \\)는 글자 그대로 찾도록 이스케이프한다", async () => {
+    await request(app).get(`/api/posts?q=${encodeURIComponent("50%_a\\b")}`);
+
+    const { where } = prisma.post.findMany.mock.calls[0][0];
+    expect(where.AND[0].searchText.contains).toBe("50\\%\\_a\\\\b");
+  });
+
+  it("검색 문서는 필드를 줄바꿈으로 이어, 검색어가 두 필드에 걸쳐 매칭되지 않게 한다", () => {
+    expect(
+      buildSearchText({ caption: "갑천 코스", text: "", authorName: "콩이네", tags: ["당일치기", "서구"] }, [
+        { name: "한밭수목원", district: "서구" },
+        { name: "엑스포", district: "유성구" },
+      ])
+    ).toBe(["갑천 코스", "", "콩이네", "당일치기", "서구", "한밭수목원", "서구", "엑스포", "유성구"].join("\n"));
   });
 
   it("검색어가 없으면 유형 필터를 건다", async () => {
@@ -230,10 +239,16 @@ describe("GET /api/posts", () => {
         where: {
           AND: [
             {
-              OR: [
-                { saves: { lt: 7 } },
-                { saves: 7, createdAt: { lt: createdAt } },
-                { saves: 7, createdAt, id: { lt: "b" } },
+              // 선행 범위 조건(saves <= 7)이 있어야 정렬 인덱스가 범위 검색(Index Cond)으로 시작 위치를 잡는다
+              AND: [
+                { saves: { lte: 7 } },
+                {
+                  OR: [
+                    { saves: { lt: 7 } },
+                    { saves: 7, createdAt: { lt: createdAt } },
+                    { saves: 7, createdAt, id: { lt: "b" } },
+                  ],
+                },
               ],
             },
           ],
@@ -253,7 +268,16 @@ describe("GET /api/posts", () => {
 
     expect(prisma.post.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { AND: [{ OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: "post-9" } }] }] },
+        where: {
+          AND: [
+            {
+              AND: [
+                { createdAt: { lte: createdAt } },
+                { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: "post-9" } }] },
+              ],
+            },
+          ],
+        },
       })
     );
   });
@@ -361,6 +385,7 @@ describe("POST /api/posts", () => {
         authorName: "콩이네",
         authorEmoji: "🐶",
         petTypeName: "유형",
+        searchText: buildSearchText(validBody, validBody.stops),
         userId: "user-1",
         courseId: "course-1",
         stops: {
@@ -581,7 +606,7 @@ describe("PATCH /api/posts/:id", () => {
   });
 
   it("코스 이름은 앞뒤 공백을 걷어 저장한다", async () => {
-    prisma.post.findUnique.mockResolvedValue({ id: "post-1", userId: "user-1" });
+    prisma.post.findUnique.mockResolvedValue(postRow({ userId: "user-1" }));
     prisma.post.update.mockResolvedValue(postRow({ userId: "user-1", caption: "새 이름" }));
 
     const res = await request(app)
@@ -592,7 +617,12 @@ describe("PATCH /api/posts/:id", () => {
     expect(res.status).toBe(200);
     expect(prisma.post.update).toHaveBeenCalledWith({
       where: { id: "post-1" },
-      data: { caption: "새 이름", text: "새 소개" },
+      data: {
+        caption: "새 이름",
+        text: "새 소개",
+        // 바뀐 제목·소개로 검색 문서도 다시 만든다(장소·작성자는 그대로)
+        searchText: ["새 이름", "새 소개", "콩이네", "당일치기", "서구", "장소 0", "서구", "장소 1", "서구"].join("\n"),
+      },
       include: INCLUDE,
     });
     expect(res.body).toMatchObject({ caption: "새 이름", isMine: true });
