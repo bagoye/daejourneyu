@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
 import { asyncHandler } from "../lib/asyncHandler";
-import { cached, invalidateCached } from "../lib/cache";
+import { bumpGeneration, cached, getGeneration } from "../lib/cache";
 import { buildSearchText } from "../lib/searchText";
 import {
   cursorDate,
@@ -183,19 +183,32 @@ function escapeLikePattern(value: string): string {
 // caption·text가 바뀔 때마다 다시 만든다. 테스트가 이 모듈에서 가져다 쓰므로 다시 내보낸다.
 export { buildSearchText };
 
-const ALL_POSTS_COUNT_KEY = "posts:count:all";
+/** 게시물 건수 캐시의 세대 이름 — 글을 쓰거나 고치거나 지우면 올린다(bumpPostCounts). */
+export const POST_COUNT_GENERATION = "posts:count";
 const ALL_POSTS_COUNT_TTL_MS = 30_000;
+const SEARCH_COUNT_TTL_MS = 60_000;
 
 /**
- * 목록 위 "총 N개"용 건수. 필터 없는 전체 건수는 둘러보기 첫 화면마다 다시 세던 값이라 30초 동안 공유한다 —
- * 실제 부하 측정(pg_stat_statements)에서 DB 시간의 14.5%가 이 COUNT였고, 글 수에 비례해 커진다.
- * 이 서버에서 글을 쓰거나 지우면 바로 비운다. 필터·검색·내 글 건수는 조건마다 달라 캐시하지 않는다.
+ * 목록 위 "총 N개"용 건수.
+ * - 전체 건수: 둘러보기 첫 화면마다 세던 값(부하 측정에서 DB 시간의 14.5%)이라 30초 공유한다.
+ * - 검색 건수: 결과가 많은 검색어는 count가 10만 행 순차 스캔(부하 중 p95 약 150ms)이라 검색어별로 60초 공유한다.
+ *   내 글 검색(mine)은 사용자마다 달라 캐시하지 않는다.
+ * 키에 세대 번호를 넣어, 글이 바뀌면 세대만 올려 모든 인스턴스의 건수 캐시를 한 번에 버린다(REDIS_URL 구성).
+ * Redis 장애로 세대를 모르면 캐시를 건너뛰고 바로 센다 — 옛 세대 값을 주지 않기 위해.
  */
-function countPosts(where: Prisma.PostWhereInput | undefined, isSearch = false): Promise<number> {
-  if (where && isSearch) return countSearchResults(where);
-  if (where) return prisma.post.count({ where });
-  return cached(ALL_POSTS_COUNT_KEY, ALL_POSTS_COUNT_TTL_MS, () => prisma.post.count());
+async function countPosts(
+  where: Prisma.PostWhereInput | undefined,
+  opts: { search: boolean; cacheAs: "all" | `q:${string}` | null },
+): Promise<number> {
+  const count = opts.search && where ? () => countSearchResults(where) : () => prisma.post.count({ where });
+  if (!opts.cacheAs) return count();
+  const gen = await getGeneration(POST_COUNT_GENERATION);
+  if (gen === null) return count();
+  const ttl = opts.cacheAs === "all" ? ALL_POSTS_COUNT_TTL_MS : SEARCH_COUNT_TTL_MS;
+  return cached(`posts:count:${gen}:${opts.cacheAs}`, ttl, count);
 }
+
+const bumpPostCounts = () => bumpGeneration(POST_COUNT_GENERATION);
 
 /**
  * 검색 건수만은 매번 검색어를 보고 실행계획을 세우게 한다(그 트랜잭션 안에서만 — SET LOCAL).
@@ -336,7 +349,9 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const last = rows[rows.length - 1];
   const nextCursor = rows.length === limit && last ? encodeCursor(postCursorValues(sort, last)) : null;
   // 전체 건수는 첫 페이지에서만 센다 — 검색 결과 개수를 보여주는 용도라 이어 받을 때는 필요 없다.
-  const total = rawCursor ? undefined : await countPosts(where, Boolean(keyword));
+  // 건수 캐시는 다른 조건이 없는 전체·검색만(검색 중에는 유형 필터를 무시한다). 내 글 건수는 매번 센다.
+  const cacheAs = mine ? null : keyword ? (`q:${keyword.toLowerCase()}` as const) : sameTypeName ? null : "all";
+  const total = rawCursor ? undefined : await countPosts(where, { search: Boolean(keyword), cacheAs });
 
   const savedPostIds = await loadSavedPostIds(req.userId, rows.map((row) => row.id));
 
@@ -392,7 +407,7 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
     include: postWithRelations,
   });
 
-  invalidateCached(ALL_POSTS_COUNT_KEY);
+  await bumpPostCounts();
   res.status(201).json(toFeedPost(created, req.userId, new Set()));
 }));
 
@@ -628,6 +643,7 @@ router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
     },
     include: postWithRelations,
   });
+  await bumpPostCounts(); // 검색 문서가 바뀌어 검색 건수가 달라질 수 있다
 
   res.json(toFeedPost(updated, req.userId, await loadSavedPostIds(req.userId, [updated.id])));
 }));
@@ -640,7 +656,7 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   }
 
   await prisma.post.delete({ where: { id: req.params.id } });
-  invalidateCached(ALL_POSTS_COUNT_KEY);
+  await bumpPostCounts();
   res.status(204).send();
 }));
 

@@ -27,7 +27,7 @@ vi.mock("../lib/auth", () => ({
 }));
 
 import postsRouter, { buildSearchText } from "./posts";
-import { invalidateCached } from "../lib/cache";
+import { closeCache } from "../lib/cache";
 
 const AS_USER_1 = "daejourneyu_token=valid:user-1";
 const INCLUDE = { stops: { orderBy: { order: "asc" } } };
@@ -88,7 +88,7 @@ beforeEach(() => {
     Array.isArray(arg) ? Promise.all(arg) : (arg as (tx: typeof prisma) => unknown)(prisma),
   );
   // 전체 건수 캐시는 모듈 전역이라 테스트끼리 섞이지 않게 매번 비운다
-  invalidateCached("posts:count:all");
+  void closeCache();
 });
 
 describe("GET /api/posts", () => {
@@ -295,7 +295,7 @@ describe("GET /api/posts", () => {
     expect((await request(app).get("/api/posts?cursor=v1.%%%")).status).toBe(400);
   });
 
-  it("필터 없는 전체 건수는 잠시 공유하고, 검색·필터 건수는 매번 센다", async () => {
+  it("전체·검색 건수는 잠시 공유하고, 유형 필터·내 글 건수는 매번 센다", async () => {
     prisma.post.count.mockResolvedValue(42);
 
     const a = await request(app).get("/api/posts");
@@ -305,7 +305,14 @@ describe("GET /api/posts", () => {
 
     await request(app).get("/api/posts?q=갑천");
     await request(app).get("/api/posts?q=갑천");
-    expect(prisma.post.count).toHaveBeenCalledTimes(3);
+    await request(app).get("/api/posts?q=" + encodeURIComponent("갑천".toUpperCase()));
+    expect(prisma.post.count).toHaveBeenCalledTimes(2); // 같은 검색어는 한 번만
+
+    await request(app).get("/api/posts?sameType=유형");
+    await request(app).get("/api/posts?sameType=유형");
+    await request(app).get("/api/posts?mine=true").set("Cookie", AS_USER_1);
+    await request(app).get("/api/posts?mine=true").set("Cookie", AS_USER_1);
+    expect(prisma.post.count).toHaveBeenCalledTimes(6);
   });
 
   it("검색 건수만 custom plan 강제(SET LOCAL)와 같은 트랜잭션에서 세고, 유형 필터 건수는 그냥 센다", async () => {
@@ -322,8 +329,9 @@ describe("GET /api/posts", () => {
     expect(prisma.post.count).toHaveBeenCalledTimes(2);
   });
 
-  it("글을 쓰면 전체 건수 캐시를 비워 다음 목록이 다시 센다", async () => {
+  it("글을 쓰면 전체·검색 건수 캐시를 한 번에 비워(세대 증가) 다음 목록이 다시 센다", async () => {
     await request(app).get("/api/posts");
+    await request(app).get("/api/posts?q=갑천");
     prisma.post.create.mockResolvedValue(postRow({ userId: "user-1" }));
     await request(app)
       .post("/api/posts")
@@ -339,8 +347,9 @@ describe("GET /api/posts", () => {
       })
       .expect(201);
     await request(app).get("/api/posts");
+    await request(app).get("/api/posts?q=갑천");
 
-    expect(prisma.post.count).toHaveBeenCalledTimes(2);
+    expect(prisma.post.count).toHaveBeenCalledTimes(4);
   });
 });
 

@@ -22,3 +22,16 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # 캐시 실험용 Redis(REDIS_URL=redis://127.0.0.1:63799). 영속화 없음 — 캐시는 날아가도 되는 데이터만 둔다.
+  redis-test:
+    image: redis:7.2-alpine
+    container_name: daejourneyu-test-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "127.0.0.1:63799:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
