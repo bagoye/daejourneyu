@@ -170,7 +170,7 @@ type SeedPost = {
   text: string;
   tags: string[];
   likes: number;
-  saves: number;
+  /* saves는 넣지 않는다 — PostSave 행 수에서 트리거가 계산하는 값이라, 직접 적으면 실제 행 수와 어긋난다. */
   stops: SeedStop[];
 };
 
@@ -186,7 +186,6 @@ const posts: SeedPost[] = [
     text: "첫날 산책로, 둘째 날 반려동물 놀이터까지 여유롭게 돌았어요.",
     tags: ["대형견 OK", "자차", "1박 2일"],
     likes: 24,
-    saves: 12,
     stops: [
       stop("place-3", "대청호 오백리길", "산책", "동구", "전 견종 · 목줄 필수"),
       stop("place-4", "유성 반려동물 놀이터", "놀이터", "유성구", "대형견 구역 분리"),
@@ -203,7 +202,6 @@ const posts: SeedPost[] = [
     text: "놀이터에서 실컷 뛰고 베이커리에서 마무리했어요.",
     tags: ["대형견 OK", "당일치기"],
     likes: 9,
-    saves: 5,
     stops: [
       stop("place-1", "한밭수목원", "산책", "서구", "전 견종 · 목줄 필수"),
       stop("place-5", "댕댕 베이커리", "맛집", "유성구", "실내 동반 가능"),
@@ -351,7 +349,6 @@ async function main() {
         authorEmoji: post.authorEmoji,
         petTypeName: post.petTypeName,
         likes: post.likes,
-        saves: post.saves,
         userId: post.userId,
         courseId: post.courseId ?? null,
         stops: { create: post.stops.map((s, order) => ({ ...s, order })) },

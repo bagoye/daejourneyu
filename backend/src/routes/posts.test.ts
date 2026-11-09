@@ -1,16 +1,19 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import request from "supertest";
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { prisma } = vi.hoisted(() => {
   const model = () => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
+    findUniqueOrThrow: vi.fn(),
     count: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    deleteMany: vi.fn(),
   });
   return { prisma: { post: model(), postSave: model(), course: model(), $transaction: vi.fn() } };
 });
@@ -361,7 +364,7 @@ describe("POST /api/posts/:id/save", () => {
     expect(prisma.post.update).not.toHaveBeenCalled();
   });
 
-  it("원본 코스의 일차 구분·이모지·이동수단을 살려 보관함 사본을 만들고 담긴 수를 올린다", async () => {
+  it("원본 코스의 일차 구분·이모지·이동수단을 살려 보관함 사본을 만들고, 트리거가 올린 담긴 수를 돌려준다", async () => {
     prisma.post.findUnique.mockResolvedValue(
       postRow({ courseId: "origin-1", stops: [stopRow(0), stopRow(1), stopRow(2)] })
     );
@@ -372,7 +375,7 @@ describe("POST /api/posts/:id/save", () => {
     });
     prisma.postSave.findUnique.mockResolvedValue(null);
     prisma.course.create.mockResolvedValue({ id: "copy-1" });
-    prisma.post.update.mockResolvedValue({ saves: 4 });
+    prisma.post.findUniqueOrThrow.mockResolvedValue({ saves: 4 });
 
     const res = await request(app).post("/api/posts/post-1/save").set("Cookie", AS_USER_1);
 
@@ -400,11 +403,36 @@ describe("POST /api/posts/:id/save", () => {
     expect(prisma.postSave.create).toHaveBeenCalledWith({
       data: { userId: "user-1", postId: "post-1", courseId: "copy-1" },
     });
-    expect(prisma.post.update).toHaveBeenCalledWith({
-      where: { id: "post-1" },
-      data: { saves: { increment: 1 } },
-      select: { saves: true },
-    });
+    // 담긴 수는 PostSave 트리거가 유지한다 — 앱이 직접 올리면 이중으로 늘어난다.
+    expect(prisma.post.update).not.toHaveBeenCalled();
+  });
+
+  it("동시 요청에 져서 유니크 제약(P2002)에 걸리면 이긴 요청의 결과를 200으로 돌려준다", async () => {
+    prisma.post.findUnique
+      .mockResolvedValueOnce(postRow())
+      .mockResolvedValueOnce({ saves: 5 });
+    // 빠른 경로에서는 아직 없었지만, 트랜잭션이 끝난 뒤에는 이긴 쪽 기록이 보인다
+    prisma.postSave.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ courseId: "copy-winner" });
+    prisma.$transaction.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("dup", { code: "P2002", clientVersion: "test" })
+    );
+
+    const res = await request(app).post("/api/posts/post-1/save").set("Cookie", AS_USER_1);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ saves: 5, saved: true, courseId: "copy-winner" });
+  });
+
+  it("유니크 제약 외의 오류는 삼키지 않는다", async () => {
+    prisma.post.findUnique.mockResolvedValue(postRow());
+    prisma.postSave.findUnique.mockResolvedValue(null);
+    prisma.$transaction.mockRejectedValue(new Error("connection lost"));
+
+    const res = await request(app).post("/api/posts/post-1/save").set("Cookie", AS_USER_1);
+
+    expect(res.status).toBe(500);
   });
 
   it("원본과 장소 수가 달라졌으면 당일치기 한 일차로 접되 이동수단은 원본을 따른다", async () => {
@@ -418,7 +446,7 @@ describe("POST /api/posts/:id/save", () => {
     });
     prisma.postSave.findUnique.mockResolvedValue(null);
     prisma.course.create.mockResolvedValue({ id: "copy-1" });
-    prisma.post.update.mockResolvedValue({ saves: 4 });
+    prisma.post.findUniqueOrThrow.mockResolvedValue({ saves: 4 });
 
     await request(app).post("/api/posts/post-1/save").set("Cookie", AS_USER_1);
 
@@ -431,7 +459,7 @@ describe("POST /api/posts/:id/save", () => {
   it("원본 코스가 없으면 옛 글의 이동수단 태그를, 그것도 없으면 자차를 쓴다", async () => {
     prisma.postSave.findUnique.mockResolvedValue(null);
     prisma.course.create.mockResolvedValue({ id: "copy-1" });
-    prisma.post.update.mockResolvedValue({ saves: 4 });
+    prisma.post.findUniqueOrThrow.mockResolvedValue({ saves: 4 });
 
     prisma.post.findUnique.mockResolvedValueOnce(postRow({ tags: ["당일치기", "대중교통"] }));
     await request(app).post("/api/posts/post-1/save").set("Cookie", AS_USER_1);
@@ -454,39 +482,42 @@ describe("DELETE /api/posts/:id/save", () => {
     expect((await request(app).delete("/api/posts/gone/save").set("Cookie", AS_USER_1)).status).toBe(404);
   });
 
-  it("담은 적이 없으면 담긴 수를 건드리지 않는다", async () => {
+  it("담은 적이 없으면 아무것도 지우지 않고 현재 담긴 수를 돌려준다", async () => {
     prisma.postSave.findUnique.mockResolvedValue(null);
 
     const res = await request(app).delete("/api/posts/post-1/save").set("Cookie", AS_USER_1);
 
     expect(res.body).toEqual({ saves: 3, saved: false });
+    expect(prisma.course.deleteMany).not.toHaveBeenCalled();
     expect(prisma.post.update).not.toHaveBeenCalled();
   });
 
-  it("기록과 보관함 사본을 지우고 담긴 수를 내린다", async () => {
-    prisma.postSave.findUnique.mockResolvedValue({ id: "save-1", courseId: "copy-1" });
-    prisma.post.update.mockResolvedValue({ saves: 2 });
+  it("보관함 사본(Course)을 먼저, 기록(PostSave)을 나중에 지운다 — 코스 직접 삭제와 잠금 순서를 맞춘다", async () => {
+    prisma.post.findUnique
+      .mockResolvedValueOnce({ id: "post-1" })
+      .mockResolvedValueOnce({ saves: 2 });
+    prisma.postSave.findUnique.mockResolvedValue({ courseId: "copy-1" });
 
     const res = await request(app).delete("/api/posts/post-1/save").set("Cookie", AS_USER_1);
 
     expect(res.body).toEqual({ saves: 2, saved: false });
-    expect(prisma.postSave.delete).toHaveBeenCalledWith({ where: { id: "save-1" } });
-    expect(prisma.course.delete).toHaveBeenCalledWith({ where: { id: "copy-1" } });
-    expect(prisma.post.update).toHaveBeenCalledWith({
-      where: { id: "post-1" },
-      data: { saves: { decrement: 1 } },
-      select: { saves: true },
-    });
+    // 남의 코스는 지우지 않도록 소유자 조건을 함께 건다
+    expect(prisma.course.deleteMany).toHaveBeenCalledWith({ where: { id: "copy-1", userId: "user-1" } });
+    expect(prisma.postSave.deleteMany).toHaveBeenCalledWith({ where: { userId: "user-1", postId: "post-1" } });
+    expect(prisma.course.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.postSave.deleteMany.mock.invocationCallOrder[0]
+    );
+    // 담긴 수는 트리거가 내린다
+    expect(prisma.post.update).not.toHaveBeenCalled();
   });
 
   it("사용자가 보관함에서 사본을 먼저 지웠으면 기록만 걷어낸다", async () => {
-    prisma.postSave.findUnique.mockResolvedValue({ id: "save-1", courseId: null });
-    prisma.post.update.mockResolvedValue({ saves: 2 });
+    prisma.postSave.findUnique.mockResolvedValue({ courseId: null });
 
     await request(app).delete("/api/posts/post-1/save").set("Cookie", AS_USER_1);
 
-    expect(prisma.postSave.delete).toHaveBeenCalled();
-    expect(prisma.course.delete).not.toHaveBeenCalled();
+    expect(prisma.postSave.deleteMany).toHaveBeenCalled();
+    expect(prisma.course.deleteMany).not.toHaveBeenCalled();
   });
 });
 

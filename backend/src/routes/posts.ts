@@ -1,8 +1,9 @@
 import { Router } from "express";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
+import { asyncHandler } from "../lib/asyncHandler";
 
 type PostStop = {
   placeId: string;
@@ -172,7 +173,7 @@ function buildSearchWhere(keyword: string): Prisma.PostWhereInput {
  * 스크롤 도중 같은 글이 두 번 나오거나 건너뛰어진다. 커서는 마지막 항목의 id이고,
  * 정렬 키에 항상 id를 섞어 순서를 확정한다(동점이어도 페이지 경계가 흔들리지 않게).
  */
-router.get("/", optionalAuth, async (req, res) => {
+router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const keyword = firstQueryValue(req.query.q)?.trim();
   const sameTypeName = firstQueryValue(req.query.sameType)?.trim();
   const sort = firstQueryValue(req.query.sort) === "recent" ? "recent" : "saves";
@@ -221,23 +222,23 @@ router.get("/", optionalAuth, async (req, res) => {
     nextCursor,
     total,
   });
-});
+}));
 
 /**
  * GET /api/posts/:id — 게시물 하나. 목록이 페이지 단위로 바뀌면서 상세 화면이 목록 캐시에서
  * 글을 못 찾는 경우가 생기므로(딥링크·뒤쪽 페이지) 단건 조회가 필요해졌다.
  */
-router.get("/:id", optionalAuth, async (req, res) => {
+router.get("/:id", optionalAuth, asyncHandler(async (req, res) => {
   const row = await prisma.post.findUnique({
     where: { id: req.params.id },
     include: postWithRelations,
   });
   if (!row) return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
   res.json(toFeedPost(row, req.userId, await loadSavedPostIds(req.userId, [row.id])));
-});
+}));
 
 // POST /api/posts — 코스 자랑하기. 로그인 필요.
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", requireAuth, asyncHandler(async (req, res) => {
   if (!validatePostInput(req.body)) {
     return res.status(400).json({ error: "게시물 형식이 올바르지 않아요" });
   }
@@ -268,7 +269,7 @@ router.post("/", requireAuth, async (req, res) => {
   });
 
   res.status(201).json(toFeedPost(created, req.userId, new Set()));
-});
+}));
 
 /**
  * 담긴 글을 내 보관함 코스로 옮겨 적는다.
@@ -331,22 +332,55 @@ function buildSavedCourseData(
   };
 }
 
+function isUniqueViolation(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
+
+/** 지금 DB에 확정된 담기 상태. 동시 요청에 진 쪽이 이긴 쪽의 결과를 그대로 돌려줄 때 쓴다. */
+async function loadSaveState(postId: string, userId: string) {
+  const [row, post] = await Promise.all([
+    prisma.postSave.findUnique({
+      where: { userId_postId: { userId, postId } },
+      select: { courseId: true },
+    }),
+    prisma.post.findUnique({ where: { id: postId }, select: { saves: true } }),
+  ]);
+  const saves = post?.saves ?? 0;
+  return row ? { saves, saved: true, courseId: row.courseId } : { saves, saved: false };
+}
+
 /**
- * POST /api/posts/:id/save — 담기. 남의 코스를 내 보관함에 사본으로 만들고 담긴 수를 올린다.
+ * POST /api/posts/:id/save — 담기. 남의 코스를 내 보관함에 사본으로 만든다. **멱등**이다.
  *
- * `Post.saves`는 PostSave 행 수를 비정규화한 값이라 둘을 한 트랜잭션에서 같이 움직인다.
- * 이미 담은 글이면 아무것도 하지 않고 현재 상태만 돌려준다 — 버튼을 두 번 눌러도(느린 네트워크에서
- * 흔하다) 사본이 두 개 생기거나 담긴 수가 부풀지 않아야 한다.
+ * 같은 사용자의 중복 담기는 `PostSave(userId, postId)` 유니크 제약이 막는다. 애플리케이션의
+ * "먼저 조회 → 없으면 생성"만으로는 동시 요청 둘이 모두 "없음"을 보고 통과하므로(READ COMMITTED),
+ * 판정은 DB 제약에 맡기고 앱은 그 결과(P2002)를 해석만 한다:
+ *  - 이긴 요청: 사본 + 기록이 한 트랜잭션으로 커밋된다.
+ *  - 진 요청: INSERT가 이긴 쪽의 커밋을 기다렸다가 P2002로 실패 → 자기 사본까지 통째로 롤백되고,
+ *    이긴 쪽이 만든 결과(같은 courseId)를 200으로 돌려받는다. 버튼 연타·재시도 모두 같은 응답이다.
+ *
+ * `Post.saves`는 앱이 건드리지 않는다 — PostSave INSERT/DELETE 트리거가 유지한다
+ * (migrations/20261109000000_post_saves_counter_trigger). 사용자 삭제 CASCADE처럼 앱을 거치지 않는
+ * 경로까지 덮기 위해서다.
  */
-router.post("/:id/save", requireAuth, async (req, res) => {
+router.post("/:id/save", requireAuth, asyncHandler(async (req, res) => {
+  const viewerId = req.userId!;
   const post = await prisma.post.findUnique({
     where: { id: req.params.id },
     include: postWithRelations,
   });
   if (!post) return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
-  if (post.userId === req.userId) {
+  if (post.userId === viewerId) {
     return res.status(400).json({ error: "내 코스는 담을 수 없어요" });
   }
+
+  // 빠른 경로: 이미 담겨 있으면 트랜잭션 없이 끝낸다(순차 재전송의 대부분이 여기서 걸린다).
+  // 정합성은 이 조회가 아니라 아래의 유니크 제약이 보장한다.
+  const existing = await prisma.postSave.findUnique({
+    where: { userId_postId: { userId: viewerId, postId: post.id } },
+    select: { courseId: true },
+  });
+  if (existing) return res.json({ saves: post.saves, saved: true, courseId: existing.courseId });
 
   // 원본 코스는 참고용이라 없어도 담기는 그대로 진행된다.
   const origin = post.courseId
@@ -360,68 +394,73 @@ router.post("/:id/save", requireAuth, async (req, res) => {
       })
     : null;
 
-  const result = await prisma.$transaction(async (tx) => {
-    const already = await tx.postSave.findUnique({
-      where: { userId_postId: { userId: req.userId!, postId: post.id } },
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // 사본을 먼저 만들고 기록을 마지막에 넣는다. 기록 INSERT가 트리거로 Post 행을 잠그므로,
+      // 순서를 이렇게 두면 인기 글의 Post 행 잠금이 트랜잭션 끝부분에만 짧게 잡힌다
+      // (서로 다른 사용자의 동시 담기가 이 잠금에서 직렬화된다).
+      const course = await tx.course.create({
+        data: { ...buildSavedCourseData(post, origin), userId: viewerId },
+        select: { id: true },
+      });
+      await tx.postSave.create({
+        data: { userId: viewerId, postId: post.id, courseId: course.id },
+      });
+      // 트리거가 같은 트랜잭션 안에서 올린 값이 그대로 보인다.
+      const { saves } = await tx.post.findUniqueOrThrow({
+        where: { id: post.id },
+        select: { saves: true },
+      });
+      return { saves, saved: true, courseId: course.id };
     });
-    if (already) {
-      return { saves: post.saves, saved: true, courseId: already.courseId };
-    }
-
-    const course = await tx.course.create({
-      data: { ...buildSavedCourseData(post, origin), userId: req.userId! },
-      select: { id: true },
-    });
-    await tx.postSave.create({
-      data: { userId: req.userId!, postId: post.id, courseId: course.id },
-    });
-    const updated = await tx.post.update({
-      where: { id: post.id },
-      data: { saves: { increment: 1 } },
-      select: { saves: true },
-    });
-
-    return { saves: updated.saves, saved: true, courseId: course.id };
-  });
-
-  res.json(result);
-});
+    return res.json(result);
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    // 같은 사용자의 동시 요청이 먼저 담았다 — 이 요청의 사본은 이미 롤백됐고, 이긴 쪽 결과를 돌려준다.
+    return res.json(await loadSaveState(post.id, viewerId));
+  }
+}));
 
 /**
- * DELETE /api/posts/:id/save — 담기 취소. 보관함 사본도 함께 지운다.
+ * DELETE /api/posts/:id/save — 담기 취소. 보관함 사본도 함께 지운다. **멱등**이다.
  *
  * 사본을 남겨두면 "담기를 껐는데 보관함에는 그대로"인 상태가 되어 되돌릴 방법이 없어진다.
  * 사용자가 보관함에서 먼저 지웠다면 courseId가 null이라(SetNull) 기록만 걷어낸다.
+ *
+ * 잠금 순서가 핵심이다: **Course → PostSave**. 코스 직접 삭제(DELETE /api/courses/:id)는 Course 행을
+ * 지운 뒤 FK의 ON DELETE SET NULL로 PostSave 행을 갱신하므로 이 순서로 잠근다. 예전처럼 PostSave를
+ * 먼저 지우고 Course를 지우면 두 요청이 서로의 잠금을 기다리는 교착(40P01)이 실제로 발생했다.
+ *
+ * 삭제는 전부 deleteMany(0행이어도 예외 없음)로 한다 — 동시 취소에서 진 쪽이 "이미 없음"을
+ * P2025 예외가 아니라 정상 결과(saved:false)로 받게 하기 위해서다. saves는 트리거가 내린다.
  */
-router.delete("/:id/save", requireAuth, async (req, res) => {
+router.delete("/:id/save", requireAuth, asyncHandler(async (req, res) => {
+  const viewerId = req.userId!;
   const post = await prisma.post.findUnique({
     where: { id: req.params.id },
-    select: { id: true, saves: true },
+    select: { id: true },
   });
   if (!post) return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
 
   const result = await prisma.$transaction(async (tx) => {
+    // 잠그지 않는 조회 — 어떤 사본을 지울지만 알아낸다.
     const existing = await tx.postSave.findUnique({
-      where: { userId_postId: { userId: req.userId!, postId: post.id } },
+      where: { userId_postId: { userId: viewerId, postId: post.id } },
+      select: { courseId: true },
     });
-    // 담은 적이 없으면 담긴 수를 건드리지 않는다 — 안 그러면 취소를 반복해 수를 깎을 수 있다.
-    if (!existing) return { saves: post.saves, saved: false };
-
-    await tx.postSave.delete({ where: { id: existing.id } });
-    if (existing.courseId) {
-      await tx.course.delete({ where: { id: existing.courseId } });
+    if (existing?.courseId) {
+      // 1) Course 행 잠금·삭제. 소유자 조건을 같이 걸어 남의 코스는 절대 지우지 않는다.
+      await tx.course.deleteMany({ where: { id: existing.courseId, userId: viewerId } });
     }
-    const updated = await tx.post.update({
-      where: { id: post.id },
-      data: { saves: { decrement: 1 } },
-      select: { saves: true },
-    });
+    // 2) PostSave 행 삭제. 동시 취소 중 실제로 지운 요청만 count=1을 얻고 트리거가 saves를 1 내린다.
+    await tx.postSave.deleteMany({ where: { userId: viewerId, postId: post.id } });
 
-    return { saves: updated.saves, saved: false };
+    const fresh = await tx.post.findUnique({ where: { id: post.id }, select: { saves: true } });
+    return { saves: fresh?.saves ?? 0, saved: false };
   });
 
   res.json(result);
-});
+}));
 
 /** 글에서 고칠 수 있는 건 소개 글귀뿐이다 — 동선(stops)은 보관함 코스에서 박제된 값이라 건드리지 않는다. */
 type PostUpdateInput = { caption?: string; text?: string };
@@ -438,7 +477,7 @@ function validatePostUpdateInput(body: unknown): body is PostUpdateInput {
 }
 
 // PATCH /api/posts/:id — 내 글 수정. 남의 글이면 삭제와 마찬가지로 존재 여부도 알리지 않고 404.
-router.patch("/:id", requireAuth, async (req, res) => {
+router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   if (!validatePostUpdateInput(req.body)) {
     return res.status(400).json({ error: "수정할 내용이 올바르지 않아요" });
   }
@@ -456,10 +495,10 @@ router.patch("/:id", requireAuth, async (req, res) => {
   });
 
   res.json(toFeedPost(updated, req.userId, await loadSavedPostIds(req.userId, [updated.id])));
-});
+}));
 
 // DELETE /api/posts/:id — 내 글 삭제. 남의 글이면 존재 여부도 알리지 않고 404로 통일한다.
-router.delete("/:id", requireAuth, async (req, res) => {
+router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   const existing = await prisma.post.findUnique({ where: { id: req.params.id } });
   if (!existing || existing.userId !== req.userId) {
     return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
@@ -467,6 +506,6 @@ router.delete("/:id", requireAuth, async (req, res) => {
 
   await prisma.post.delete({ where: { id: req.params.id } });
   res.status(204).send();
-});
+}));
 
 export default router;
