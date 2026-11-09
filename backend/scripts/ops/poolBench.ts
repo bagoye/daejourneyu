@@ -38,6 +38,10 @@ async function main() {
 
   // 연결을 미리 열어 첫 요청의 연결 비용을 측정에서 뺀다
   await prisma.$queryRaw`SELECT 1`;
+  // 시드 규모(scale)에 맞춰 존재하는 사용자·게시물 범위에서만 고른다(없는 id로 404·FK 오류가 섞이지 않게)
+  const [{ users, posts }] = await prisma.$queryRaw<{ users: number; posts: number }[]>`
+    SELECT (SELECT count(*) FROM users WHERE id LIKE 'u%')::int AS users,
+           (SELECT count(*) FROM "Post" WHERE id LIKE 'p%')::int AS posts`;
 
   const latencies: number[] = [];
   const statuses = new Map<string, number>();
@@ -53,8 +57,8 @@ async function main() {
       } else if (r < 0.9) {
         res = await request(app).get(`/api/posts?q=${encodeURIComponent(pick(keywords))}&limit=10`);
       } else {
-        const user = `u${pad(1 + Math.floor(rand() * 10000), 8)}`;
-        const post = `/api/posts/p${pad(1 + Math.floor(rand() * 100000), 8)}/save`;
+        const user = `u${pad(1 + Math.floor(rand() * users), 8)}`;
+        const post = `/api/posts/p${pad(1 + Math.floor(rand() * posts), 8)}/save`;
         const cookie = authCookie(user);
         res = await request(app).post(post).set("Cookie", cookie);
         await request(app).delete(post).set("Cookie", cookie); // 순변화 0

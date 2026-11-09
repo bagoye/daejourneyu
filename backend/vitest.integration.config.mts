@@ -6,6 +6,8 @@ import { config as loadEnv } from "dotenv";
 loadEnv({ path: ".env.test" });
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL ?? "";
+// 풀러 뒤에서 돌릴 때(TEST_DATABASE_URL=PgBouncer) 마이그레이션용 직접 접속. 없으면 같은 값.
+const testDirectUrl = process.env.TEST_DIRECT_URL ?? testDatabaseUrl;
 
 export default defineConfig({
   test: {
@@ -18,7 +20,7 @@ export default defineConfig({
     env: {
       // lib/prisma의 PrismaClient가 이 값으로 접속한다 — 앱 코드는 테스트 DB를 따로 알 필요가 없다.
       DATABASE_URL: testDatabaseUrl,
-      DIRECT_URL: testDatabaseUrl,
+      DIRECT_URL: testDirectUrl,
       // 실제 JWT 서명·검증 경로를 그대로 태운다(테스트 전용 값).
       JWT_SECRET: "integration-test-secret",
       NODE_ENV: "test",

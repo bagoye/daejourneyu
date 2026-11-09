@@ -11,12 +11,17 @@ export default function setup() {
   if (!url) {
     throw new Error("TEST_DATABASE_URL이 없습니다 — .env.test.example을 복사해 .env.test를 만드세요");
   }
+  // 앱은 풀러(PgBouncer 트랜잭션 모드)를 거치고 마이그레이션은 직접 붙는 운영 구성을 재현할 때만 따로 준다.
+  // 마이그레이션을 트랜잭션 모드 풀러로 돌리면 Prisma의 advisory lock이 풀러의 서버 연결에 남아 다음 배포를 막는다
+  // (ops-lab에서 재현 — docs/db-optimization/08-pgbouncer-lab.md).
+  const direct = process.env.TEST_DIRECT_URL ?? url;
   assertLocalDatabase(url);
+  assertLocalDatabase(direct);
 
   // 기존 마이그레이션 파일을 수정 없이 그대로 적용한다(스키마 = 운영과 동일).
   execSync("npx prisma migrate deploy", {
     stdio: "inherit",
-    env: { ...process.env, DATABASE_URL: url, DIRECT_URL: url },
+    env: { ...process.env, DATABASE_URL: direct, DIRECT_URL: direct },
   });
 }
 

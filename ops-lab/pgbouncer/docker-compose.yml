@@ -1,0 +1,46 @@
+# PgBouncer 실습 — PostgreSQL(직접 54333) + PgBouncer(6432). 다른 실습과 분리된 별도 프로젝트다.
+#
+#   docker compose -f ops-lab/pgbouncer/docker-compose.yml up -d --build --wait
+#   bash ops-lab/scripts/pgbouncer-drill.sh
+#   docker compose -f ops-lab/pgbouncer/docker-compose.yml down -v
+#
+# 계정은 실습용 값이다(userlist.txt 포함 — 실제 운영 비밀번호를 여기에 두지 않는다).
+name: djy-pgbouncer
+
+services:
+  db:
+    image: postgres:16-bookworm
+    container_name: djy-pgb-db
+    hostname: db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: daejourneyu
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_preload_libraries=pg_stat_statements"]
+    ports:
+      - "127.0.0.1:54333:5432"
+    volumes:
+      - pgb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d daejourneyu"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  pgbouncer:
+    build: .
+    image: djy-ops-lab-pgbouncer:1.18
+    container_name: djy-pgb-bouncer
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:6432:6432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U postgres -d daejourneyu"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgb-data:
