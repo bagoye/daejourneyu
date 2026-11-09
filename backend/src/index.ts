@@ -22,7 +22,7 @@ import postsRouter from "./routes/posts";
 import reviewsRouter from "./routes/reviews";
 import festivalsRouter from "./routes/festivals";
 import { errorHandler } from "./lib/errorHandler";
-import { createShutdown } from "./lib/shutdown";
+import { createShutdown, drainingMiddleware, isDraining } from "./lib/shutdown";
 import { prisma } from "./lib/prisma";
 
 const app = express();
@@ -31,11 +31,15 @@ const PORT = process.env.PORT || 4000;
 // credentials: 인증 쿠키를 주고받기 위해 필요(프론트가 rewrites로 프록시하지 않고 직접 호출하는 경우 대비)
 // FRONTEND_ORIGIN 미설정 시(로컬 개발) localhost:3000을 허용한다.
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:3000", credentials: true }));
+app.use(drainingMiddleware);
 app.use(express.json());
 app.use(cookieParser());
 
 // 헬스체크
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+// 종료 정리 중에는 503 — 로드밸런서·모니터가 이 인스턴스를 트래픽에서 빼게(lib/shutdown.ts)
+app.get("/api/health", (_req, res) =>
+  isDraining() ? res.status(503).json({ ok: false, draining: true }) : res.json({ ok: true })
+);
 
 // 라우트
 app.use("/api/places", placesRouter);
