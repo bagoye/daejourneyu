@@ -42,7 +42,7 @@
 | 커넥션 풀 고갈 시 응답 | 500 + 스택 로그 폭증 | 503 + Retry-After, 한 줄 경고 | poolBench 재현 + 단위 테스트 |
 | 풀 크기 근거 | 미지정(호스트 사양 따라 변동) | 측정 기반 권장(10에서 포화: 276 rps) | poolBench |
 | 종료 처리 | 정리 없이 종료 | draining(헬스 503·Connection: close) → 대기 → 수신 중단 → 요청 완료 → $disconnect | 리눅스 컨테이너 실제 SIGTERM: 진행 중 40건 끊김 2~3건 → 0건(대기 2초), DB 연결 잔여 0 |
-| CI 통합 테스트 job | GitHub에서 실행된 적 없음 | 커밋 코드로 리눅스에서 동일 단계 통과(단위 98 · 마이그레이션 12 · 통합 31) | 로컬 컨테이너 재현 |
+| CI 통합 테스트 job | GitHub에서 실행된 적 없음 | GitHub Actions 러너에서 통과(포크 PR #5: frontend·backend·backend-integration, 성능 게이트 4분 16초) | 실제 CI 실행 |
 | 느린 SQL | 추적 수단 없음 | 앱 느린 쿼리 로그(파라미터 제외) + pg_stat_statements | 로컬 부하 |
 | 코스 삭제(인덱스 없는 FK) | 13.0ms(FK 트리거 11.1ms) | 1.7ms(0.13ms) | EXPLAIN ANALYZE + 점검 쿼리 0행 |
 | 목록 전체 건수 COUNT | DB 시간 14.5% | 30초 캐시(쓰기 시 무효화) | pg_stat_statements 재측정 |
