@@ -31,6 +31,14 @@ export function errorHandler(
       // 쓰기 충돌·데드락으로 트랜잭션이 중단됐다 — 다시 시도하면 대부분 성공한다
       case "P2034":
         return res.status(409).json({ error: "다른 요청과 충돌했어요. 잠시 후 다시 시도해주세요" });
+      // 커넥션 풀 고갈(P2024: pool_timeout 안에 연결을 못 얻음) · 트랜잭션 시작 대기/시간 초과(P2028).
+      // 서버 버그가 아니라 일시적 과부하라 503 + Retry-After로 알린다 — 클라이언트·프록시가 재시도할 수 있고,
+      // 로그에는 스택 대신 한 줄만 남겨 과부하 순간에 로그가 폭증하지 않게 한다(scripts/ops/poolBench.ts로 재현).
+      case "P2024":
+      case "P2028":
+        console.warn(`[api] DB 연결 대기 초과(${err.code}) — 커넥션 풀 크기·느린 쿼리를 확인하세요`);
+        res.setHeader("Retry-After", "1");
+        return res.status(503).json({ error: "요청이 몰려 잠시 처리하지 못했어요. 잠시 후 다시 시도해주세요" });
     }
   }
 

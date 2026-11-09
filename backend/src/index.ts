@@ -22,6 +22,8 @@ import postsRouter from "./routes/posts";
 import reviewsRouter from "./routes/reviews";
 import festivalsRouter from "./routes/festivals";
 import { errorHandler } from "./lib/errorHandler";
+import { createShutdown } from "./lib/shutdown";
+import { prisma } from "./lib/prisma";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -59,6 +61,11 @@ app.use("/api/festivals", festivalsRouter);
 // 라우터에서 넘어온 예외를 상태 코드로 변환한다(Prisma 경합 오류는 4xx, 나머지는 500).
 app.use(errorHandler);
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🐾 대저니유 API listening on http://localhost:${PORT}`);
 });
+
+// 재배포(SIGTERM)·Ctrl+C(SIGINT) 때 진행 중 요청을 마치고 DB 연결을 닫는다 — lib/shutdown.ts
+const shutdown = createShutdown(server, prisma);
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

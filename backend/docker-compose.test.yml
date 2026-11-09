@@ -13,6 +13,8 @@ services:
       POSTGRES_USER: test
       POSTGRES_PASSWORD: test
       POSTGRES_DB: daejourneyu_test
+    # 느린 SQL 누적 통계(운영 Supabase에서도 대시보드 Query Performance가 이 확장을 쓴다)
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=top"]
     ports:
       - "127.0.0.1:54329:5432"
     healthcheck:

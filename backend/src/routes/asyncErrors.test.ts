@@ -121,6 +121,15 @@ describe("라우터 async 예외 처리", () => {
     expect(res.status).toBe(409);
   });
 
+  it("커넥션 풀 고갈(P2024)·트랜잭션 대기 초과(P2028)는 503 + Retry-After로 응답한다", async () => {
+    for (const code of ["P2024", "P2028"]) {
+      prisma.post.findMany.mockRejectedValueOnce(knownError(code));
+      const res = await request(app).get("/api/posts").timeout(2000);
+      expect(res.status, code).toBe(503);
+      expect(res.headers["retry-after"]).toBe("1");
+    }
+  });
+
   it("깨진 JSON 본문은 500이 아니라 400으로 응답한다", async () => {
     const res = await request(app)
       .post("/api/reviews")
