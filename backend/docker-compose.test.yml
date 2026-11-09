@@ -1,0 +1,22 @@
+# 통합 테스트·성능 실험 전용 PostgreSQL. 운영(Supabase)과 완전히 분리된 일회용 로컬 DB다.
+#   npm run db:test:up    # 기동 (127.0.0.1:54329)
+#   npm run test:int      # 마이그레이션 적용 후 통합 테스트 실행
+#   npm run db:test:down  # 정지 + 데이터 삭제
+#
+# `prisma dev`(PGlite)는 단일 연결이라 동시 트랜잭션이 직렬화된다 — 잠금·유니크 경합을 재현하려면
+# 실제 PostgreSQL 서버가 필요해서 따로 둔다. 계정은 이 컨테이너 안에서만 쓰는 테스트용 값이다.
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: daejourneyu-test-pg
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: daejourneyu_test
+    ports:
+      - "127.0.0.1:54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d daejourneyu_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
