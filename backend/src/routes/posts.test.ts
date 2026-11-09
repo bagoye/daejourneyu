@@ -15,7 +15,7 @@ const { prisma } = vi.hoisted(() => {
     delete: vi.fn(),
     deleteMany: vi.fn(),
   });
-  return { prisma: { post: model(), postSave: model(), course: model(), $transaction: vi.fn() } };
+  return { prisma: { post: model(), postSave: model(), course: model(), $transaction: vi.fn(), $executeRaw: vi.fn() } };
 });
 
 vi.mock("../lib/prisma", () => ({ prisma }));
@@ -83,7 +83,10 @@ beforeEach(() => {
   prisma.post.count.mockResolvedValue(0);
   prisma.postSave.findMany.mockResolvedValue([]);
   // 트랜잭션 안의 tx도 같은 mock을 쓴다 — 무엇이 어떤 순서로 불렸는지만 확인하면 된다.
-  prisma.$transaction.mockImplementation(async (fn: (tx: typeof prisma) => unknown) => fn(prisma));
+  // 배열(batch) 형태는 이미 만들어진 쿼리 promise들을 순서대로 기다린다.
+  prisma.$transaction.mockImplementation(async (arg: unknown) =>
+    Array.isArray(arg) ? Promise.all(arg) : (arg as (tx: typeof prisma) => unknown)(prisma),
+  );
   // 전체 건수 캐시는 모듈 전역이라 테스트끼리 섞이지 않게 매번 비운다
   invalidateCached("posts:count:all");
 });
@@ -303,6 +306,20 @@ describe("GET /api/posts", () => {
     await request(app).get("/api/posts?q=갑천");
     await request(app).get("/api/posts?q=갑천");
     expect(prisma.post.count).toHaveBeenCalledTimes(3);
+  });
+
+  it("검색 건수만 custom plan 강제(SET LOCAL)와 같은 트랜잭션에서 세고, 유형 필터 건수는 그냥 센다", async () => {
+    prisma.post.count.mockResolvedValue(7);
+
+    const res = await request(app).get("/api/posts?q=카페");
+    expect(res.body.total).toBe(7);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const sql = (prisma.$executeRaw.mock.calls[0]![0] as TemplateStringsArray).join("?");
+    expect(sql).toBe("SET LOCAL plan_cache_mode = force_custom_plan");
+
+    await request(app).get("/api/posts?sameType=유형");
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.post.count).toHaveBeenCalledTimes(2);
   });
 
   it("글을 쓰면 전체 건수 캐시를 비워 다음 목록이 다시 센다", async () => {

@@ -191,9 +191,26 @@ const ALL_POSTS_COUNT_TTL_MS = 30_000;
  * 실제 부하 측정(pg_stat_statements)에서 DB 시간의 14.5%가 이 COUNT였고, 글 수에 비례해 커진다.
  * 이 서버에서 글을 쓰거나 지우면 바로 비운다. 필터·검색·내 글 건수는 조건마다 달라 캐시하지 않는다.
  */
-function countPosts(where: Prisma.PostWhereInput | undefined): Promise<number> {
+function countPosts(where: Prisma.PostWhereInput | undefined, isSearch = false): Promise<number> {
+  if (where && isSearch) return countSearchResults(where);
   if (where) return prisma.post.count({ where });
   return cached(ALL_POSTS_COUNT_KEY, ALL_POSTS_COUNT_TTL_MS, () => prisma.post.count());
+}
+
+/**
+ * 검색 건수만은 매번 검색어를 보고 실행계획을 세우게 한다(그 트랜잭션 안에서만 — SET LOCAL).
+ * Prisma는 같은 SQL을 prepared statement로 재사용하고, PostgreSQL은 5회 실행 뒤 값과 무관한 generic plan으로
+ * 바꿀 수 있다. generic plan은 검색어를 모른 채 "결과가 적다"고 보고 늘 trigram 인덱스를 쓰는데, 2글자 검색어는
+ * trigram으로 거를 수 없어 인덱스가 전체 행을 후보로 돌려준다 — 순차 스캔 126ms가 223ms가 됐다
+ * (docs/db-optimization/10 §5, 부하 중 흔한 검색어 p95 240 → 152ms). 운영의 pgbouncer=true 접속은
+ * 이름 없는 statement라 원래 매번 계획을 세우므로 영향이 없고, 직접 접속 구성을 위한 방어다.
+ */
+async function countSearchResults(where: Prisma.PostWhereInput): Promise<number> {
+  const [, count] = await prisma.$transaction([
+    prisma.$executeRaw`SET LOCAL plan_cache_mode = force_custom_plan`,
+    prisma.post.count({ where }),
+  ]);
+  return count;
 }
 
 type PostSort = "recent" | "saves";
@@ -319,7 +336,7 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const last = rows[rows.length - 1];
   const nextCursor = rows.length === limit && last ? encodeCursor(postCursorValues(sort, last)) : null;
   // 전체 건수는 첫 페이지에서만 센다 — 검색 결과 개수를 보여주는 용도라 이어 받을 때는 필요 없다.
-  const total = rawCursor ? undefined : await countPosts(where);
+  const total = rawCursor ? undefined : await countPosts(where, Boolean(keyword));
 
   const savedPostIds = await loadSavedPostIds(req.userId, rows.map((row) => row.id));
 
