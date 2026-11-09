@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { FeedPager } from "@/components/feed/FeedPager";
 import { LoadErrorState } from "@/components/shell/LoadErrorState";
-import { useReviews, useDeleteReview } from "@/hooks/useReviews";
+import { useMyReviews, useDeleteReview } from "@/hooks/useReviews";
 import { useToastStore } from "@/stores/useToastStore";
 import { paginate } from "@/lib/feed";
 
@@ -16,15 +16,15 @@ import { paginate } from "@/lib/feed";
 const REVIEWS_PER_PAGE = 4;
 
 export default function MyReviewsPage() {
-  const { data, isLoading, isError, refetch } = useReviews();
-  const reviews = useMemo(() => data ?? [], [data]);
+  // 서버가 내 후기만 내려준다(mine=true) — 전 사용자 후기를 받아 화면에서 거르지 않는다.
+  const { data, isLoading, isError, refetch } = useMyReviews();
+  const myReviews = useMemo(() => data ?? [], [data]);
   const deleteReview = useDeleteReview();
   const showToast = useToastStore((state) => state.show);
 
   const [page, setPage] = useState(0);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  const myReviews = useMemo(() => reviews.filter((review) => review.isMine), [reviews]);
   const myPage = paginate(myReviews, page, REVIEWS_PER_PAGE);
 
   const confirmDelete = async () => {

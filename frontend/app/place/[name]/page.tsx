@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { LoginModal } from "@/components/my/LoginModal";
 import { PlaceMap } from "@/components/place/PlaceMap";
 import { usePlaces } from "@/hooks/usePlaces";
-import { useReviews } from "@/hooks/useReviews";
+import { usePlaceReviews } from "@/hooks/useReviews";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { getConditionTags } from "@/lib/placeFilters";
 import { conditionSourceLabel } from "@/lib/courseFormat";
@@ -22,8 +22,13 @@ export default function PlaceDetailPage({ params }: { params: { name: string } }
   const [loginOpen, setLoginOpen] = useState(false);
 
   const place = places.find((p) => p.name === placeName);
-  const { data: reviews = [], isLoading: reviewsLoading } = useReviews(place?.id);
-  const placeReviews = place ? reviews : [];
+  const {
+    reviews: placeReviews,
+    isLoading: reviewsLoading,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
+  } = usePlaceReviews(place?.id);
   const conditionTags = place ? getConditionTags(place.condition, place.smallDogOnly) : [];
 
   const handleWriteReview = () => {
@@ -146,6 +151,16 @@ export default function PlaceDetailPage({ params }: { params: { name: string } }
               </Card>
             ))
           )}
+          {hasNextPage ? (
+            <button
+              type="button"
+              onClick={() => void fetchNextPage()}
+              disabled={isFetchingNextPage}
+              className="py-2 text-xs font-semibold text-brand disabled:text-ink-muted"
+            >
+              {isFetchingNextPage ? "불러오는 중…" : "후기 더보기"}
+            </button>
+          ) : null}
         </div>
 
         <div className="mt-6">

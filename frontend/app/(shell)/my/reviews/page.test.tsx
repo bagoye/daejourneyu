@@ -6,13 +6,14 @@ import { api, holdResponse, http, HttpResponse, serverError } from "@/test/msw/h
 import { server } from "@/test/msw/server";
 import { resetNavigation } from "@/test/navigation";
 import { useToastStore } from "@/stores/useToastStore";
+import { useAuthStore } from "@/stores/useAuthStore";
 import { renderWithProviders } from "@/test/render";
 import MyReviewsPage from "./page";
 
 vi.mock("next/navigation", async () => (await import("@/test/navigation")).navigationMock);
 
 /**
- * 내가 쓴 후기 — 화면 → useReviews → fetch → (MSW) 전 구간을 그대로 태운다.
+ * 내가 쓴 후기 — 화면 → useMyReviews → fetch → (MSW) 전 구간을 그대로 태운다.
  * 훅·API 클라이언트를 mock하지 않으므로, 쿼리키·무효화·낙관적 업데이트가 실제로 맞물려야 통과한다.
  */
 
@@ -21,10 +22,16 @@ const MY_PLACES = ["한밭수목원", "유림공원", "갑천 산책로", "대�
 /** 서버 DB 역할. GET은 이 배열을 돌려주고, DELETE 성공 시 여기서 지운다. */
 let db: Review[];
 
+/** 실제 서버처럼 mine=true면 내 후기만 돌려준다. */
+function listReviews(request: Request) {
+  const mine = new URL(request.url).searchParams.get("mine") === "true";
+  return HttpResponse.json(mine ? db.filter((review) => review.isMine) : db);
+}
+
 /** "서버가 정상 동작하는" 기본 상태. 실패 시나리오는 테스트 안에서 server.use로 덮어쓴다. */
 function useHealthyServer() {
   server.use(
-    http.get(api("/api/reviews"), () => HttpResponse.json(db)),
+    http.get(api("/api/reviews"), ({ request }) => listReviews(request)),
     http.delete(api("/api/reviews/:id"), ({ params }) => {
       db = db.filter((review) => review.id !== params.id);
       return new HttpResponse(null, { status: 204 });
@@ -36,6 +43,8 @@ beforeEach(() => {
   resetNavigation("/my/reviews");
   // 토스트 스토어는 모듈 전역 상태라 앞 테스트의 문구가 남는다 — 매번 비운다.
   useToastStore.setState({ message: null, key: 0 });
+  // 내 후기는 로그인해야 요청한다
+  useAuthStore.setState({ isLoggedIn: true });
   db = [
     ...MY_PLACES.map((placeName, i) => makeReview({ id: `mine-${i}`, placeName, isMine: true })),
     makeReview({ id: "others", placeName: "남의 단골 카페", isMine: false }),
@@ -143,7 +152,7 @@ describe("내가 쓴 후기 — 삭제", () => {
     let listRequests = 0;
     const refetch = holdResponse(() => HttpResponse.json(db));
     server.use(
-      http.get(api("/api/reviews"), () => (++listRequests === 1 ? HttpResponse.json(db) : refetch.resolver())),
+      http.get(api("/api/reviews"), ({ request }) => (++listRequests === 1 ? listReviews(request) : refetch.resolver())),
       http.delete(api("/api/reviews/:id"), hold.resolver)
     );
     const { user } = renderWithProviders(<MyReviewsPage />);

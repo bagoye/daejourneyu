@@ -13,7 +13,7 @@ import { LogoutModal } from "@/components/my/LogoutModal";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { usePetStore } from "@/stores/usePetStore";
 import { useToastStore } from "@/stores/useToastStore";
-import { useReviews } from "@/hooks/useReviews";
+import { useMyReviews } from "@/hooks/useReviews";
 import { useMyBadges } from "@/hooks/useMyBadges";
 
 export default function MyPage() {
@@ -26,7 +26,7 @@ export default function MyPage() {
   const switchActivePet = usePetStore((state) => state.switchActivePet);
   const activePet = usePetStore((state) => state.activePet());
   const showToast = useToastStore((state) => state.show);
-  const { data: reviews = [] } = useReviews();
+  const { data: myReviews = [] } = useMyReviews();
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
@@ -56,7 +56,7 @@ export default function MyPage() {
     router.push("/my/reviews");
   };
 
-  const myReviewCount = reviews.filter((review) => review.isMine).length;
+  const myReviewCount = myReviews.length;
 
   return (
     <>

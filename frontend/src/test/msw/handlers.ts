@@ -14,7 +14,12 @@ export function api(path: string): string {
  * 전제가 되는 일이 없다.
  */
 export const handlers = [
-  http.get(api("/api/reviews"), () => HttpResponse.json([])),
+  // limit이 있으면 페이지 응답(장소 후기), 없으면 배열(내 후기) — 실제 서버와 같은 규칙
+  http.get(api("/api/reviews"), ({ request }) =>
+    new URL(request.url).searchParams.has("limit")
+      ? HttpResponse.json({ items: [], nextCursor: null })
+      : HttpResponse.json([])
+  ),
   http.get(api("/api/courses"), () => HttpResponse.json([])),
   http.get(api("/api/courses/schedules"), () => HttpResponse.json([])),
   http.get(api("/api/places"), () => HttpResponse.json([])),

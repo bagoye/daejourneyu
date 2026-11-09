@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
 import { asyncHandler } from "../lib/asyncHandler";
+import { cursorDate, decodeCursor, encodeCursor, InvalidCursorError } from "../lib/cursor";
 
 /** 프론트 src/types/review.ts의 ReviewTagOption과 필드명을 맞춘다. */
 type ReviewTagOption = {
@@ -90,15 +91,82 @@ function validateReviewInput(body: unknown): body is ReviewCreateInput {
 
 const router = Router();
 
-// GET /api/reviews?placeId=xxx — 장소 상세의 후기 목록. 비로그인도 볼 수 있고, 로그인했으면 isMine이 붙는다.
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 50;
+const REVIEW_CURSOR_SHAPE: ("string" | "number")[] = ["string", "string"]; // createdAt(ISO), id
+
+function firstQueryValue(raw: unknown): string | undefined {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw) && typeof raw[0] === "string") return raw[0];
+  return undefined;
+}
+
+/**
+ * GET /api/reviews — 후기 목록. 비로그인도 볼 수 있고, 로그인했으면 isMine이 붙는다.
+ *
+ *  - `placeId=xxx`: 장소 상세용.
+ *  - `mine=true`: 내가 쓴 후기만(로그인 필요). 예전엔 마이탭이 **전 사용자 후기 전체**를 받아 화면에서
+ *    isMine으로 걸렀다 — 후기 수에 비례해 응답이 커지고, 목록에 data URL 사진까지 실려 있었다.
+ *  - `limit`(+`cursor`): 보내면 `{ items, nextCursor }`로 끊어서 준다. 보내지 않으면 예전처럼 배열 전체
+ *    (하위 호환). 내 후기는 사용자 한 명 분량이라 뱃지 계산이 전체를 쓰고, 장소 후기는 사진 때문에 끊는다.
+ *
+ * 정렬은 createdAt 내림차순 + id(동시각 동점 정리). 커서는 lib/cursor.ts의 값 기반 커서다.
+ */
 router.get("/", optionalAuth, asyncHandler(async (req, res) => {
-  const { placeId } = req.query;
+  const placeId = firstQueryValue(req.query.placeId);
+  const mine = firstQueryValue(req.query.mine) === "true";
+  const rawLimit = firstQueryValue(req.query.limit);
+  const rawCursor = firstQueryValue(req.query.cursor);
+
+  if (mine && !req.userId) {
+    return res.status(401).json({ error: "로그인이 필요해요" });
+  }
+
+  const filters: Prisma.ReviewWhereInput[] = [];
+  if (placeId) filters.push({ placeId });
+  if (mine) filters.push({ authorId: req.userId! });
+  const orderBy: Prisma.ReviewOrderByWithRelationInput[] = [{ createdAt: "desc" }, { id: "desc" }];
+
+  // 하위 호환: limit이 없으면 예전 응답(배열 전체)
+  if (rawLimit === undefined) {
+    const rows = await prisma.review.findMany({
+      where: filters.length > 0 ? { AND: filters } : undefined,
+      orderBy,
+      include: reviewWithRelations,
+    });
+    return res.json(rows.map((row) => toReview(row, req.userId)));
+  }
+
+  const parsed = Number(rawLimit);
+  const limit = Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), MAX_LIMIT) : DEFAULT_LIMIT;
+
+  if (rawCursor) {
+    let values;
+    try {
+      values = decodeCursor(rawCursor, REVIEW_CURSOR_SHAPE);
+      if (!values) throw new InvalidCursorError();
+      const createdAt = cursorDate(values[0]!);
+      const id = String(values[1]);
+      filters.push({ OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] });
+    } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return res.status(400).json({ error: "목록 위치 정보가 올바르지 않아요" });
+      }
+      throw err;
+    }
+  }
+
   const rows = await prisma.review.findMany({
-    where: typeof placeId === "string" ? { placeId } : undefined,
-    orderBy: { createdAt: "desc" },
+    where: filters.length > 0 ? { AND: filters } : undefined,
+    orderBy,
+    take: limit,
     include: reviewWithRelations,
   });
-  res.json(rows.map((row) => toReview(row, req.userId)));
+  const last = rows[rows.length - 1];
+  res.json({
+    items: rows.map((row) => toReview(row, req.userId)),
+    nextCursor: rows.length === limit && last ? encodeCursor([last.createdAt.toISOString(), last.id]) : null,
+  });
 }));
 
 // GET /api/reviews/tags — 후기 작성 화면이 쓰는 태그 사전(분야별로 이미 정렬해 내려준다).

@@ -13,8 +13,8 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/my",
 }));
 
-const hooks = vi.hoisted(() => ({ useReviews: vi.fn(), useMyBadges: vi.fn() }));
-vi.mock("@/hooks/useReviews", () => ({ useReviews: hooks.useReviews }));
+const hooks = vi.hoisted(() => ({ useMyReviews: vi.fn(), useMyBadges: vi.fn() }));
+vi.mock("@/hooks/useReviews", () => ({ useMyReviews: hooks.useMyReviews }));
 vi.mock("@/hooks/useMyBadges", () => ({ useMyBadges: hooks.useMyBadges }));
 
 const LOGIN_DESCRIPTION = "로그인하면 반려동물 여권과 내 활동을 볼 수 있어요.";
@@ -33,9 +33,8 @@ const dubu = makePet({ id: "pet-2", name: "두부", breed: "시바견" });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  hooks.useReviews.mockReturnValue({
-    data: [makeReview({ id: "r1", isMine: true }), makeReview({ id: "r2", isMine: false })],
-  });
+  // 서버가 mine=true로 내 후기만 내려준다
+  hooks.useMyReviews.mockReturnValue({ data: [makeReview({ id: "r1", isMine: true })] });
   const badges = [
     makeBadge({ id: "first-owner", name: "첫 반려인", got: true, level: 1, current: 1, tileLabel: "가입 완료" }),
     makeBadge({ id: "dj-full-round", name: "대전 한바퀴", current: 4, target: 5, tileLabel: "4/5" }),
@@ -158,7 +157,7 @@ describe("마이 — 로그인", () => {
     expect(nav.push).toHaveBeenLastCalledWith("/my/badges");
   });
 
-  it("내가 쓴 후기 수는 내 후기만 세고, 누르면 후기 목록으로 보낸다", async () => {
+  it("내가 쓴 후기 수를 보여주고, 누르면 후기 목록으로 보낸다", async () => {
     render(<MyPage />);
 
     expect(screen.getByText("1개 ›")).toBeTruthy();
