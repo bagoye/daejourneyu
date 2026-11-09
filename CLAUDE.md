@@ -67,6 +67,9 @@ DB를 다시 띄운 뒤 백엔드를 재시작할 필요는 없다 — Prisma가
   `prisma dev`(PGlite)는 단일 연결이라 동시성 재현에 쓰지 않는다. 설계 근거는 `docs/db-optimization/`.
 - `Post.saves`는 **DB 트리거가 유지**한다(`migrations/20261109000000_post_saves_counter_trigger`) — 앱에서 직접
   증감하지 않는다. 쓰기 경로를 추가할 때는 잠금 순서 **Course → 하위 테이블(CourseDay·PostSave)**을 지킨다.
+- `Post.searchText`(검색 문서)는 **앱이 유지**한다 — 게시물을 만들거나 caption·text를 바꾸는 경로는 반드시
+  `buildSearchText`로 함께 갱신한다(안 하면 그 글이 검색에 안 걸린다). 성능 실험 스크립트는 `backend/scripts/perf/`,
+  결과는 `docs/db-optimization/03-query-performance.md`.
 
 변경 후에는 **`npm test`와 `npm run build`를 둘 다 통과시킨다.** 프론트 테스트 파일은 `next build`의
 타입 체크 대상이고, 백엔드 테스트 파일은 `tsconfig.json`에서 제외되어 `dist/`에 빌드되지 않는다.
