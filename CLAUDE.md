@@ -21,8 +21,8 @@ daejourneyu/
 │  └─ PLAN.md    ← 화면 인벤토리, 구조 결정 근거, 포팅 제외 화면 목록
 ├─ backend/      Node.js + Express 4 + TS + Prisma + PostgreSQL
 │  └─ src/routes/  도메인별 라우터
-├─ ops-lab/      DB 운영 실습실(Docker, 54330) — PITR·보관 정책 훈련 스크립트. docs/db-optimization/06
-└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(01~06)
+├─ ops-lab/      DB 운영 실습실(Docker) — PITR·보관 정책(54330, docs 06), 복제·장애 전환(replication/, 54331·54332, docs 07)
+└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(01~07)
 ```
 
 ## 실행
