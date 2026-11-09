@@ -1,8 +1,18 @@
 import { Router } from "express";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
+import { asyncHandler } from "../lib/asyncHandler";
+import { bumpGeneration, cached, getGeneration } from "../lib/cache";
+import { buildSearchText } from "../lib/searchText";
+import {
+  cursorDate,
+  decodeCursor,
+  encodeCursor,
+  InvalidCursorError,
+  type CursorValue,
+} from "../lib/cursor";
 
 type PostStop = {
   placeId: string;
@@ -145,19 +155,130 @@ function firstQueryValue(raw: unknown): string | undefined {
 }
 
 /**
- * 검색 범위는 프론트가 쓰던 searchPosts와 맞춘다 — 코스 이름·한마디·작성자·태그·방문 장소명.
- * 태그만 부분일치가 아니라 정확일치인데, 태그 값이 "당일치기"·"자차"·"유성구"처럼 고정 어휘라
- * 부분일치가 필요한 자치구 검색은 stops.district가 대신 받는다(Postgres는 String[] 부분검색을 못 한다).
+ * 검색 범위는 서버 검색 이전 프론트의 searchPosts와 같다 — 코스 이름·한마디·작성자·태그·방문 장소명·자치구를
+ * 모두 부분일치·대소문자 무시로 찾는다.
+ *
+ * 전부 `Post.searchText` 한 컬럼(pg_trgm GIN 인덱스)에 모아 검색한다. 예전처럼 컬럼 3개 ILIKE + PostStop
+ * EXISTS 2개를 OR로 묶으면, OR 안의 서브쿼리 때문에 PostgreSQL이 인덱스를 쓰지 못해 Post·PostStop을 매번
+ * 전체 스캔했다(10만 건 기준 목록+건수 약 0.9초, 그중 대부분이 과대 추정된 비용 때문에 켜진 JIT 컴파일).
+ *
+ * 태그도 검색 문서에 넣었다. 예전의 태그 정확일치(tags @>)는 배열 부분검색이 안 돼서 생긴 우회책이었고,
+ * 통계에 없는 값을 500행으로 과대 추정해 "결과 없는 검색"마다 담기순 인덱스를 끝까지 훑게 만들었다(158ms).
+ * 근거·측정은 docs/db-optimization/03-query-performance.md.
  */
 function buildSearchWhere(keyword: string): Prisma.PostWhereInput {
+  return { searchText: { contains: escapeLikePattern(keyword), mode: "insensitive" } };
+}
+
+/**
+ * Prisma의 `contains`는 PostgreSQL에서 LIKE 와일드카드(%, _)를 이스케이프하지 않는다 — "50%"로 검색하면
+ * "500원"까지 걸렸다(통합 테스트로 확인, 예전 검색 코드에도 있던 문제). ILIKE의 기본 이스케이프 문자인
+ * 백슬래시로 감싸 글자 그대로 찾게 한다.
+ */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+// 검색 문서는 lib/searchText.ts — 태그·PostStop은 글에 박제된 값이라 바뀌지 않고, 고칠 수 있는
+// caption·text가 바뀔 때마다 다시 만든다. 테스트가 이 모듈에서 가져다 쓰므로 다시 내보낸다.
+export { buildSearchText };
+
+/** 게시물 건수 캐시의 세대 이름 — 글을 쓰거나 고치거나 지우면 올린다(bumpPostCounts). */
+export const POST_COUNT_GENERATION = "posts:count";
+const ALL_POSTS_COUNT_TTL_MS = 30_000;
+const SEARCH_COUNT_TTL_MS = 60_000;
+
+/**
+ * 목록 위 "총 N개"용 건수.
+ * - 전체 건수: 둘러보기 첫 화면마다 세던 값(부하 측정에서 DB 시간의 14.5%)이라 30초 공유한다.
+ * - 검색 건수: 결과가 많은 검색어는 count가 10만 행 순차 스캔(부하 중 p95 약 150ms)이라 검색어별로 60초 공유한다.
+ *   내 글 검색(mine)은 사용자마다 달라 캐시하지 않는다.
+ * 키에 세대 번호를 넣어, 글이 바뀌면 세대만 올려 모든 인스턴스의 건수 캐시를 한 번에 버린다(REDIS_URL 구성).
+ * Redis 장애로 세대를 모르면 캐시를 건너뛰고 바로 센다 — 옛 세대 값을 주지 않기 위해.
+ */
+async function countPosts(
+  where: Prisma.PostWhereInput | undefined,
+  opts: { search: boolean; cacheAs: "all" | `q:${string}` | null },
+): Promise<number> {
+  const count = opts.search && where ? () => countSearchResults(where) : () => prisma.post.count({ where });
+  if (!opts.cacheAs) return count();
+  const gen = await getGeneration(POST_COUNT_GENERATION);
+  if (gen === null) return count();
+  const ttl = opts.cacheAs === "all" ? ALL_POSTS_COUNT_TTL_MS : SEARCH_COUNT_TTL_MS;
+  return cached(`posts:count:${gen}:${opts.cacheAs}`, ttl, count);
+}
+
+const bumpPostCounts = () => bumpGeneration(POST_COUNT_GENERATION);
+
+/**
+ * 검색 건수만은 매번 검색어를 보고 실행계획을 세우게 한다(그 트랜잭션 안에서만 — SET LOCAL).
+ * Prisma는 같은 SQL을 prepared statement로 재사용하고, PostgreSQL은 5회 실행 뒤 값과 무관한 generic plan으로
+ * 바꿀 수 있다. generic plan은 검색어를 모른 채 "결과가 적다"고 보고 늘 trigram 인덱스를 쓰는데, 2글자 검색어는
+ * trigram으로 거를 수 없어 인덱스가 전체 행을 후보로 돌려준다 — 순차 스캔 126ms가 223ms가 됐다
+ * (docs/db-optimization/10 §5, 부하 중 흔한 검색어 p95 240 → 152ms). 운영의 pgbouncer=true 접속은
+ * 이름 없는 statement라 원래 매번 계획을 세우므로 영향이 없고, 직접 접속 구성을 위한 방어다.
+ */
+async function countSearchResults(where: Prisma.PostWhereInput): Promise<number> {
+  const [, count] = await prisma.$transaction([
+    prisma.$executeRaw`SET LOCAL plan_cache_mode = force_custom_plan`,
+    prisma.post.count({ where }),
+  ]);
+  return count;
+}
+
+type PostSort = "recent" | "saves";
+
+const POST_CURSOR_SHAPE: Record<PostSort, ("string" | "number")[]> = {
+  recent: ["string", "string"], // createdAt(ISO), id
+  saves: ["number", "string", "string"], // saves, createdAt(ISO), id
+};
+
+function postCursorValues(sort: PostSort, row: { id: string; saves: number; createdAt: Date }): CursorValue[] {
+  const createdAt = row.createdAt.toISOString();
+  return sort === "recent" ? [createdAt, row.id] : [row.saves, createdAt, row.id];
+}
+
+/** 값 커서면 그대로, 예전 id 커서면 그 글의 현재 값으로 바꾼다. id 커서의 글이 없으면 null. */
+async function resolvePostCursor(raw: string, sort: PostSort): Promise<CursorValue[] | null> {
+  const values = decodeCursor(raw, POST_CURSOR_SHAPE[sort]);
+  if (values) return values;
+  const row = await prisma.post.findUnique({
+    where: { id: raw },
+    select: { id: true, saves: true, createdAt: true },
+  });
+  return row ? postCursorValues(sort, row) : null;
+}
+
+/**
+ * 내림차순 정렬에서 "커서보다 뒤" 조건. 튜플 비교 (a, b, c) < (a0, b0, c0)를 OR로 풀어 쓴 형태에
+ * **선행 범위 조건**(a <= a0)을 AND로 덧붙인다.
+ *
+ * OR만 있으면 정렬 인덱스((createdAt, id) / (saves, createdAt, id))가 있어도 PostgreSQL이 범위 조건으로 쓰지
+ * 못하고 맨 앞부터 읽으며 필터로 버린다 — 9만 번째 글 이후 페이지에서 9만 행을 읽었다(5.7ms). 선행 조건이
+ * 있으면 Index Cond로 시작 위치를 잡는다(0.03ms). 의미는 같다(OR의 모든 항이 a <= a0를 함의).
+ * row-value 비교 `(a, b, c) < (...)`가 가장 정확하지만 Prisma 쿼리 빌더로는 표현할 수 없어 이 형태를 택했다.
+ */
+function afterPostCursor(sort: PostSort, values: CursorValue[]): Prisma.PostWhereInput {
+  if (sort === "recent") {
+    const [createdAt, id] = [cursorDate(values[0]!), String(values[1])];
+    return {
+      AND: [
+        { createdAt: { lte: createdAt } },
+        { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] },
+      ],
+    };
+  }
+  const [saves, createdAt, id] = [Number(values[0]), cursorDate(values[1]!), String(values[2])];
   return {
-    OR: [
-      { caption: { contains: keyword, mode: "insensitive" } },
-      { text: { contains: keyword, mode: "insensitive" } },
-      { authorName: { contains: keyword, mode: "insensitive" } },
-      { tags: { has: keyword } },
-      { stops: { some: { name: { contains: keyword, mode: "insensitive" } } } },
-      { stops: { some: { district: { contains: keyword, mode: "insensitive" } } } },
+    AND: [
+      { saves: { lte: saves } },
+      {
+        OR: [
+          { saves: { lt: saves } },
+          { saves, createdAt: { lt: createdAt } },
+          { saves, createdAt, id: { lt: id } },
+        ],
+      },
     ],
   };
 }
@@ -168,16 +289,23 @@ function buildSearchWhere(keyword: string): Prisma.PostWhereInput {
  * 검색·유형 필터·정렬을 전부 여기서 처리한다. 예전에는 전체를 내려주고 화면이 걸렀는데,
  * 글이 늘면 그대로 무너지는 구조라 서버로 옮겼다.
  *
- * 페이지네이션은 offset이 아니라 **커서**다 — 담긴순 목록은 순서가 계속 바뀌어서 offset을 쓰면
- * 스크롤 도중 같은 글이 두 번 나오거나 건너뛰어진다. 커서는 마지막 항목의 id이고,
- * 정렬 키에 항상 id를 섞어 순서를 확정한다(동점이어도 페이지 경계가 흔들리지 않게).
+ * 페이지네이션은 offset이 아니라 **값 기반 커서**다(lib/cursor.ts). 커서에는 마지막 항목의 정렬 키
+ * 값(담긴순: saves·createdAt·id, 최신순: createdAt·id)이 담기고, 다음 페이지는 "그 값보다 뒤"를 조건으로
+ * 고른다. 정렬 키 끝에 항상 id를 붙여 동점이어도 순서가 확정된다.
+ *
+ * 예전 커서(글 id)는 Prisma `cursor: { id }`로 커서 행의 **현재** 값을 다시 읽었기 때문에, 커서 글이
+ * 지워지면 목록이 거기서 끝났고(나머지 누락), 커서 글의 담긴 수가 바뀌면 이미 본 글이 다시 나왔다.
+ * 이미 발급된 id 커서는 계속 받아준다(그 글의 현재 값을 읽어 값 커서로 바꿔 쓴다).
+ *
+ * 남는 한계: 담긴순에서 **다른** 글의 담긴 수가 페이지 사이에 바뀌면 그 글은 경계를 넘어 중복·누락될 수 있다.
+ * 정렬 기준 자체가 변하는 값이라 생기는 문제라 서버 커서로는 없앨 수 없고, 화면이 id로 중복을 걸러낸다.
  */
-router.get("/", optionalAuth, async (req, res) => {
+router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const keyword = firstQueryValue(req.query.q)?.trim();
   const sameTypeName = firstQueryValue(req.query.sameType)?.trim();
-  const sort = firstQueryValue(req.query.sort) === "recent" ? "recent" : "saves";
+  const sort: PostSort = firstQueryValue(req.query.sort) === "recent" ? "recent" : "saves";
   const mine = firstQueryValue(req.query.mine) === "true";
-  const cursor = firstQueryValue(req.query.cursor);
+  const rawCursor = firstQueryValue(req.query.cursor);
   const limit = parseLimit(firstQueryValue(req.query.limit));
 
   if (mine && !req.userId) {
@@ -189,30 +317,41 @@ router.get("/", optionalAuth, async (req, res) => {
   if (keyword) filters.push(buildSearchWhere(keyword));
   // 검색 중에는 유형 필터를 무시한다 — 검색은 항상 전체 코스를 훑는다(프로토타입 동작 유지).
   if (!keyword && sameTypeName) filters.push({ petTypeName: sameTypeName });
-
-  // 커서 글이 지워졌으면 Prisma가 던지므로, 조용히 목록의 끝으로 처리한다.
-  if (cursor) {
-    const alive = await prisma.post.findUnique({ where: { id: cursor }, select: { id: true } });
-    if (!alive) return res.json({ items: [], nextCursor: null });
-  }
-
+  // 전체 건수는 커서 조건을 뺀 필터로 센다.
   const where = filters.length > 0 ? { AND: filters } : undefined;
 
+  if (rawCursor) {
+    let cursorValues: CursorValue[] | null;
+    try {
+      cursorValues = await resolvePostCursor(rawCursor, sort);
+    } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        return res.status(400).json({ error: "목록 위치 정보가 올바르지 않아요" });
+      }
+      throw err;
+    }
+    // 예전 형식(id) 커서가 가리키는 글이 지워졌으면 위치를 알 수 없어 목록의 끝으로 처리한다.
+    if (!cursorValues) return res.json({ items: [], nextCursor: null });
+    filters.push(afterPostCursor(sort, cursorValues));
+  }
+
   const rows = await prisma.post.findMany({
-    where,
+    where: filters.length > 0 ? { AND: filters } : undefined,
     orderBy:
       sort === "recent"
         ? [{ createdAt: "desc" }, { id: "desc" }]
         : [{ saves: "desc" }, { createdAt: "desc" }, { id: "desc" }],
     take: limit,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     include: postWithRelations,
   });
 
   // 마지막 페이지인지는 "요청한 만큼 채워 왔는가"로 판단한다. 딱 떨어지면 다음 요청이 빈 배열로 끝난다.
-  const nextCursor = rows.length === limit ? rows[rows.length - 1]!.id : null;
+  const last = rows[rows.length - 1];
+  const nextCursor = rows.length === limit && last ? encodeCursor(postCursorValues(sort, last)) : null;
   // 전체 건수는 첫 페이지에서만 센다 — 검색 결과 개수를 보여주는 용도라 이어 받을 때는 필요 없다.
-  const total = cursor ? undefined : await prisma.post.count({ where });
+  // 건수 캐시는 다른 조건이 없는 전체·검색만(검색 중에는 유형 필터를 무시한다). 내 글 건수는 매번 센다.
+  const cacheAs = mine ? null : keyword ? (`q:${keyword.toLowerCase()}` as const) : sameTypeName ? null : "all";
+  const total = rawCursor ? undefined : await countPosts(where, { search: Boolean(keyword), cacheAs });
 
   const savedPostIds = await loadSavedPostIds(req.userId, rows.map((row) => row.id));
 
@@ -221,23 +360,23 @@ router.get("/", optionalAuth, async (req, res) => {
     nextCursor,
     total,
   });
-});
+}));
 
 /**
  * GET /api/posts/:id — 게시물 하나. 목록이 페이지 단위로 바뀌면서 상세 화면이 목록 캐시에서
  * 글을 못 찾는 경우가 생기므로(딥링크·뒤쪽 페이지) 단건 조회가 필요해졌다.
  */
-router.get("/:id", optionalAuth, async (req, res) => {
+router.get("/:id", optionalAuth, asyncHandler(async (req, res) => {
   const row = await prisma.post.findUnique({
     where: { id: req.params.id },
     include: postWithRelations,
   });
   if (!row) return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
   res.json(toFeedPost(row, req.userId, await loadSavedPostIds(req.userId, [row.id])));
-});
+}));
 
 // POST /api/posts — 코스 자랑하기. 로그인 필요.
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", requireAuth, asyncHandler(async (req, res) => {
   if (!validatePostInput(req.body)) {
     return res.status(400).json({ error: "게시물 형식이 올바르지 않아요" });
   }
@@ -260,6 +399,7 @@ router.post("/", requireAuth, async (req, res) => {
       authorName: input.authorName,
       authorEmoji: input.authorEmoji,
       petTypeName: input.petTypeName,
+      searchText: buildSearchText(input, input.stops),
       userId: req.userId!,
       courseId: input.courseId ?? null,
       stops: { create: input.stops.map((stop, order) => ({ ...stop, order })) },
@@ -267,8 +407,9 @@ router.post("/", requireAuth, async (req, res) => {
     include: postWithRelations,
   });
 
+  await bumpPostCounts();
   res.status(201).json(toFeedPost(created, req.userId, new Set()));
-});
+}));
 
 /**
  * 담긴 글을 내 보관함 코스로 옮겨 적는다.
@@ -331,22 +472,55 @@ function buildSavedCourseData(
   };
 }
 
+function isUniqueViolation(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
+
+/** 지금 DB에 확정된 담기 상태. 동시 요청에 진 쪽이 이긴 쪽의 결과를 그대로 돌려줄 때 쓴다. */
+async function loadSaveState(postId: string, userId: string) {
+  const [row, post] = await Promise.all([
+    prisma.postSave.findUnique({
+      where: { userId_postId: { userId, postId } },
+      select: { courseId: true },
+    }),
+    prisma.post.findUnique({ where: { id: postId }, select: { saves: true } }),
+  ]);
+  const saves = post?.saves ?? 0;
+  return row ? { saves, saved: true, courseId: row.courseId } : { saves, saved: false };
+}
+
 /**
- * POST /api/posts/:id/save — 담기. 남의 코스를 내 보관함에 사본으로 만들고 담긴 수를 올린다.
+ * POST /api/posts/:id/save — 담기. 남의 코스를 내 보관함에 사본으로 만든다. **멱등**이다.
  *
- * `Post.saves`는 PostSave 행 수를 비정규화한 값이라 둘을 한 트랜잭션에서 같이 움직인다.
- * 이미 담은 글이면 아무것도 하지 않고 현재 상태만 돌려준다 — 버튼을 두 번 눌러도(느린 네트워크에서
- * 흔하다) 사본이 두 개 생기거나 담긴 수가 부풀지 않아야 한다.
+ * 같은 사용자의 중복 담기는 `PostSave(userId, postId)` 유니크 제약이 막는다. 애플리케이션의
+ * "먼저 조회 → 없으면 생성"만으로는 동시 요청 둘이 모두 "없음"을 보고 통과하므로(READ COMMITTED),
+ * 판정은 DB 제약에 맡기고 앱은 그 결과(P2002)를 해석만 한다:
+ *  - 이긴 요청: 사본 + 기록이 한 트랜잭션으로 커밋된다.
+ *  - 진 요청: INSERT가 이긴 쪽의 커밋을 기다렸다가 P2002로 실패 → 자기 사본까지 통째로 롤백되고,
+ *    이긴 쪽이 만든 결과(같은 courseId)를 200으로 돌려받는다. 버튼 연타·재시도 모두 같은 응답이다.
+ *
+ * `Post.saves`는 앱이 건드리지 않는다 — PostSave INSERT/DELETE 트리거가 유지한다
+ * (migrations/20261109000000_post_saves_counter_trigger). 사용자 삭제 CASCADE처럼 앱을 거치지 않는
+ * 경로까지 덮기 위해서다.
  */
-router.post("/:id/save", requireAuth, async (req, res) => {
+router.post("/:id/save", requireAuth, asyncHandler(async (req, res) => {
+  const viewerId = req.userId!;
   const post = await prisma.post.findUnique({
     where: { id: req.params.id },
     include: postWithRelations,
   });
   if (!post) return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
-  if (post.userId === req.userId) {
+  if (post.userId === viewerId) {
     return res.status(400).json({ error: "내 코스는 담을 수 없어요" });
   }
+
+  // 빠른 경로: 이미 담겨 있으면 트랜잭션 없이 끝낸다(순차 재전송의 대부분이 여기서 걸린다).
+  // 정합성은 이 조회가 아니라 아래의 유니크 제약이 보장한다.
+  const existing = await prisma.postSave.findUnique({
+    where: { userId_postId: { userId: viewerId, postId: post.id } },
+    select: { courseId: true },
+  });
+  if (existing) return res.json({ saves: post.saves, saved: true, courseId: existing.courseId });
 
   // 원본 코스는 참고용이라 없어도 담기는 그대로 진행된다.
   const origin = post.courseId
@@ -360,68 +534,73 @@ router.post("/:id/save", requireAuth, async (req, res) => {
       })
     : null;
 
-  const result = await prisma.$transaction(async (tx) => {
-    const already = await tx.postSave.findUnique({
-      where: { userId_postId: { userId: req.userId!, postId: post.id } },
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // 사본을 먼저 만들고 기록을 마지막에 넣는다. 기록 INSERT가 트리거로 Post 행을 잠그므로,
+      // 순서를 이렇게 두면 인기 글의 Post 행 잠금이 트랜잭션 끝부분에만 짧게 잡힌다
+      // (서로 다른 사용자의 동시 담기가 이 잠금에서 직렬화된다).
+      const course = await tx.course.create({
+        data: { ...buildSavedCourseData(post, origin), userId: viewerId },
+        select: { id: true },
+      });
+      await tx.postSave.create({
+        data: { userId: viewerId, postId: post.id, courseId: course.id },
+      });
+      // 트리거가 같은 트랜잭션 안에서 올린 값이 그대로 보인다.
+      const { saves } = await tx.post.findUniqueOrThrow({
+        where: { id: post.id },
+        select: { saves: true },
+      });
+      return { saves, saved: true, courseId: course.id };
     });
-    if (already) {
-      return { saves: post.saves, saved: true, courseId: already.courseId };
-    }
-
-    const course = await tx.course.create({
-      data: { ...buildSavedCourseData(post, origin), userId: req.userId! },
-      select: { id: true },
-    });
-    await tx.postSave.create({
-      data: { userId: req.userId!, postId: post.id, courseId: course.id },
-    });
-    const updated = await tx.post.update({
-      where: { id: post.id },
-      data: { saves: { increment: 1 } },
-      select: { saves: true },
-    });
-
-    return { saves: updated.saves, saved: true, courseId: course.id };
-  });
-
-  res.json(result);
-});
+    return res.json(result);
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    // 같은 사용자의 동시 요청이 먼저 담았다 — 이 요청의 사본은 이미 롤백됐고, 이긴 쪽 결과를 돌려준다.
+    return res.json(await loadSaveState(post.id, viewerId));
+  }
+}));
 
 /**
- * DELETE /api/posts/:id/save — 담기 취소. 보관함 사본도 함께 지운다.
+ * DELETE /api/posts/:id/save — 담기 취소. 보관함 사본도 함께 지운다. **멱등**이다.
  *
  * 사본을 남겨두면 "담기를 껐는데 보관함에는 그대로"인 상태가 되어 되돌릴 방법이 없어진다.
  * 사용자가 보관함에서 먼저 지웠다면 courseId가 null이라(SetNull) 기록만 걷어낸다.
+ *
+ * 잠금 순서가 핵심이다: **Course → PostSave**. 코스 직접 삭제(DELETE /api/courses/:id)는 Course 행을
+ * 지운 뒤 FK의 ON DELETE SET NULL로 PostSave 행을 갱신하므로 이 순서로 잠근다. 예전처럼 PostSave를
+ * 먼저 지우고 Course를 지우면 두 요청이 서로의 잠금을 기다리는 교착(40P01)이 실제로 발생했다.
+ *
+ * 삭제는 전부 deleteMany(0행이어도 예외 없음)로 한다 — 동시 취소에서 진 쪽이 "이미 없음"을
+ * P2025 예외가 아니라 정상 결과(saved:false)로 받게 하기 위해서다. saves는 트리거가 내린다.
  */
-router.delete("/:id/save", requireAuth, async (req, res) => {
+router.delete("/:id/save", requireAuth, asyncHandler(async (req, res) => {
+  const viewerId = req.userId!;
   const post = await prisma.post.findUnique({
     where: { id: req.params.id },
-    select: { id: true, saves: true },
+    select: { id: true },
   });
   if (!post) return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
 
   const result = await prisma.$transaction(async (tx) => {
+    // 잠그지 않는 조회 — 어떤 사본을 지울지만 알아낸다.
     const existing = await tx.postSave.findUnique({
-      where: { userId_postId: { userId: req.userId!, postId: post.id } },
+      where: { userId_postId: { userId: viewerId, postId: post.id } },
+      select: { courseId: true },
     });
-    // 담은 적이 없으면 담긴 수를 건드리지 않는다 — 안 그러면 취소를 반복해 수를 깎을 수 있다.
-    if (!existing) return { saves: post.saves, saved: false };
-
-    await tx.postSave.delete({ where: { id: existing.id } });
-    if (existing.courseId) {
-      await tx.course.delete({ where: { id: existing.courseId } });
+    if (existing?.courseId) {
+      // 1) Course 행 잠금·삭제. 소유자 조건을 같이 걸어 남의 코스는 절대 지우지 않는다.
+      await tx.course.deleteMany({ where: { id: existing.courseId, userId: viewerId } });
     }
-    const updated = await tx.post.update({
-      where: { id: post.id },
-      data: { saves: { decrement: 1 } },
-      select: { saves: true },
-    });
+    // 2) PostSave 행 삭제. 동시 취소 중 실제로 지운 요청만 count=1을 얻고 트리거가 saves를 1 내린다.
+    await tx.postSave.deleteMany({ where: { userId: viewerId, postId: post.id } });
 
-    return { saves: updated.saves, saved: false };
+    const fresh = await tx.post.findUnique({ where: { id: post.id }, select: { saves: true } });
+    return { saves: fresh?.saves ?? 0, saved: false };
   });
 
   res.json(result);
-});
+}));
 
 /** 글에서 고칠 수 있는 건 소개 글귀뿐이다 — 동선(stops)은 보관함 코스에서 박제된 값이라 건드리지 않는다. */
 type PostUpdateInput = { caption?: string; text?: string };
@@ -438,35 +617,47 @@ function validatePostUpdateInput(body: unknown): body is PostUpdateInput {
 }
 
 // PATCH /api/posts/:id — 내 글 수정. 남의 글이면 삭제와 마찬가지로 존재 여부도 알리지 않고 404.
-router.patch("/:id", requireAuth, async (req, res) => {
+router.patch("/:id", requireAuth, asyncHandler(async (req, res) => {
   if (!validatePostUpdateInput(req.body)) {
     return res.status(400).json({ error: "수정할 내용이 올바르지 않아요" });
   }
   const input = req.body;
 
-  const existing = await prisma.post.findUnique({ where: { id: req.params.id } });
+  const existing = await prisma.post.findUnique({ where: { id: req.params.id }, include: postWithRelations });
   if (!existing || existing.userId !== req.userId) {
     return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
   }
 
+  const caption = input.caption?.trim() ?? existing.caption;
+  const text = input.text ?? existing.text;
   const updated = await prisma.post.update({
     where: { id: existing.id },
-    data: { caption: input.caption?.trim(), text: input.text },
+    data: {
+      caption,
+      text,
+      // 검색 문서도 같이 고친다 — 안 그러면 바뀐 제목으로 검색해도 안 나온다
+      searchText: buildSearchText(
+        { caption, text, authorName: existing.authorName, tags: existing.tags },
+        existing.stops
+      ),
+    },
     include: postWithRelations,
   });
+  await bumpPostCounts(); // 검색 문서가 바뀌어 검색 건수가 달라질 수 있다
 
   res.json(toFeedPost(updated, req.userId, await loadSavedPostIds(req.userId, [updated.id])));
-});
+}));
 
 // DELETE /api/posts/:id — 내 글 삭제. 남의 글이면 존재 여부도 알리지 않고 404로 통일한다.
-router.delete("/:id", requireAuth, async (req, res) => {
+router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   const existing = await prisma.post.findUnique({ where: { id: req.params.id } });
   if (!existing || existing.userId !== req.userId) {
     return res.status(404).json({ error: "게시물을 찾을 수 없어요" });
   }
 
   await prisma.post.delete({ where: { id: req.params.id } });
+  await bumpPostCounts();
   res.status(204).send();
-});
+}));
 
 export default router;

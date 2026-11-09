@@ -3,6 +3,7 @@ node_modules/
 dist/
 .env
 .env.local
+.env.test
 public/sw.js
 public/workbox-*.js
 

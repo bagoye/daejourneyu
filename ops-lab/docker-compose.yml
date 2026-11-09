@@ -1,0 +1,66 @@
+# DB 운영 실습실 — PITR(시점 복구)·복제·풀러·모니터링을 무료로, 누구나 같은 결과로 재현하기 위한 환경.
+# 통합 테스트용 DB(backend/docker-compose.test.yml, 54329)와는 별개다. 운영(Supabase)과 무관하다.
+#
+#   docker compose -f ops-lab/docker-compose.yml up -d --wait
+#   bash ops-lab/scripts/pitr-drill.sh
+#   docker compose -f ops-lab/docker-compose.yml down -v   # 실습 데이터·백업 모두 삭제
+#
+# PITR은 PostgreSQL 기본 기능만 쓴다: pg_basebackup(베이스 백업) + archive_command(WAL 연속 보관)
+# + recovery_target_time(시점 지정 재생). pgBackRest·WAL-G 같은 도구는 이 과정을 자동화한 것이다.
+# 계정은 이 컨테이너 안에서만 쓰는 실습용 값이다.
+name: djy-ops-lab
+
+services:
+  db:
+    image: postgres:16-bookworm
+    container_name: djy-lab-db
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: daejourneyu
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      # WAL 세그먼트가 닫힐 때마다 보관소로 복사한다. 같은 이름이 이미 있으면 실패시켜 덮어쓰기를 막는다
+      # (PostgreSQL 문서의 기본 예). 이 연속된 WAL이 있어야 베이스 백업 이후 "임의 시점"까지 재생할 수 있다.
+      - -c
+      - archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f
+      # 쓰기가 적어도 최대 60초마다 세그먼트를 넘겨 보관되게 한다 — 장비가 통째로 사라질 때의 최대 손실(RPO) 상한
+      - -c
+      - archive_timeout=60
+      - -c
+      - max_wal_senders=10
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+    ports:
+      - "127.0.0.1:54330:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 실제 운영이라면 아래 둘은 다른 장비·S3 같은 외부 저장소에 둔다(DB 서버와 함께 사라지지 않게)
+      - wal-archive:/wal-archive
+      - backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d daejourneyu"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # 볼륨 권한 정리용 1회성 서비스 — 보관소 디렉터리를 postgres 사용자 소유로 만든다
+  init-perms:
+    image: postgres:16-bookworm
+    entrypoint: ["sh", "-c", "chown -R postgres:postgres /wal-archive /backups"]
+    volumes:
+      - wal-archive:/wal-archive
+      - backups:/backups
+    restart: "no"
+
+volumes:
+  pgdata:
+  wal-archive:
+  backups:

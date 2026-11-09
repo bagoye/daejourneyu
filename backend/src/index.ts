@@ -21,6 +21,9 @@ import authKakaoRouter from "./routes/authKakao";
 import postsRouter from "./routes/posts";
 import reviewsRouter from "./routes/reviews";
 import festivalsRouter from "./routes/festivals";
+import { errorHandler } from "./lib/errorHandler";
+import { createShutdown, drainingMiddleware, isDraining } from "./lib/shutdown";
+import { prisma } from "./lib/prisma";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -28,11 +31,15 @@ const PORT = process.env.PORT || 4000;
 // credentials: 인증 쿠키를 주고받기 위해 필요(프론트가 rewrites로 프록시하지 않고 직접 호출하는 경우 대비)
 // FRONTEND_ORIGIN 미설정 시(로컬 개발) localhost:3000을 허용한다.
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:3000", credentials: true }));
+app.use(drainingMiddleware);
 app.use(express.json());
 app.use(cookieParser());
 
 // 헬스체크
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+// 종료 정리 중에는 503 — 로드밸런서·모니터가 이 인스턴스를 트래픽에서 빼게(lib/shutdown.ts)
+app.get("/api/health", (_req, res) =>
+  isDraining() ? res.status(503).json({ ok: false, draining: true }) : res.json({ ok: true })
+);
 
 // 라우트
 app.use("/api/places", placesRouter);
@@ -55,12 +62,14 @@ app.use("/api/posts", postsRouter);
 app.use("/api/reviews", reviewsRouter);
 app.use("/api/festivals", festivalsRouter);
 
-// 라우터에서 넘어온 예외를 500으로 변환한다 — 스택은 서버 로그에만 남긴다.
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("[api] 처리 중 오류:", err);
-  res.status(500).json({ error: "서버에서 문제가 발생했어요. 잠시 후 다시 시도해주세요" });
-});
+// 라우터에서 넘어온 예외를 상태 코드로 변환한다(Prisma 경합 오류는 4xx, 나머지는 500).
+app.use(errorHandler);
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🐾 대저니유 API listening on http://localhost:${PORT}`);
 });
+
+// 재배포(SIGTERM)·Ctrl+C(SIGINT) 때 진행 중 요청을 마치고 DB 연결을 닫는다 — lib/shutdown.ts
+const shutdown = createShutdown(server, prisma);
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

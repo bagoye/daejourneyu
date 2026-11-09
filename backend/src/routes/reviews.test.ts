@@ -79,7 +79,7 @@ afterEach(() => {
 });
 
 describe("GET /api/reviews", () => {
-  it("비로그인도 최신순 전체를 받고, 화면 필드 모양으로 내려준다", async () => {
+  it("비로그인도 최신순으로(예전 형식은 100건 상한) 받고, 화면 필드 모양으로 내려준다", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     prisma.review.findMany.mockResolvedValue([reviewRow()]);
@@ -89,8 +89,11 @@ describe("GET /api/reviews", () => {
     expect(res.status).toBe(200);
     expect(prisma.review.findMany).toHaveBeenCalledWith({
       where: undefined,
-      orderBy: { createdAt: "desc" },
+      // 같은 시각에 쓴 후기도 순서가 흔들리지 않게 id로 동점을 정리한다
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       include: INCLUDE,
+      // limit 없는 예전 형식은 최신 100건 상한 — 파라미터 없는 요청 하나가 전체 후기를 받아 가지 않게
+      take: 100,
     });
     expect(res.body).toEqual([
       {
@@ -116,8 +119,59 @@ describe("GET /api/reviews", () => {
     await request(app).get("/api/reviews?placeId=place-7");
 
     expect(prisma.review.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { placeId: "place-7" } })
+      expect.objectContaining({ where: { AND: [{ placeId: "place-7" }] } })
     );
+  });
+
+  it("mine=true면 DB에서 내 후기만 고른다(전체를 받아 화면에서 거르지 않는다)", async () => {
+    await request(app).get("/api/reviews?mine=true").set("Cookie", AS_USER_1);
+
+    expect(prisma.review.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { AND: [{ authorId: "user-1" }] } })
+    );
+    // 내 후기는 뱃지 계산에 전체 개수가 필요해 상한을 두지 않는다
+    expect(prisma.review.findMany.mock.calls[0][0]).not.toHaveProperty("take");
+  });
+
+  it("mine=true는 로그인이 필요하다", async () => {
+    expect((await request(app).get("/api/reviews?mine=true")).status).toBe(401);
+    expect(prisma.review.findMany).not.toHaveBeenCalled();
+  });
+
+  it("limit을 보내면 끊어서 주고, 꽉 채웠으면 마지막 후기 위치를 다음 커서로 준다", async () => {
+    prisma.review.findMany.mockResolvedValue([
+      reviewRow({ id: "r1", createdAt: new Date("2026-09-10T00:00:00.000Z") }),
+      reviewRow({ id: "r2", createdAt: new Date("2026-09-09T00:00:00.000Z") }),
+    ]);
+
+    const res = await request(app).get("/api/reviews?placeId=place-1&limit=2");
+
+    expect(prisma.review.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2 }));
+    expect(res.body.items.map((r: { id: string }) => r.id)).toEqual(["r1", "r2"]);
+    expect(res.body.nextCursor).toEqual(expect.stringMatching(/^v1./));
+
+    // 받은 커서로 이어 받으면 "그 시각·id보다 뒤" 조건이 붙는다
+    prisma.review.findMany.mockResolvedValue([]);
+    const next = await request(app).get(
+      `/api/reviews?placeId=place-1&limit=2&cursor=${encodeURIComponent(res.body.nextCursor)}`
+    );
+    expect(next.body).toEqual({ items: [], nextCursor: null });
+    const createdAt = new Date("2026-09-09T00:00:00.000Z");
+    expect(prisma.review.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { placeId: "place-1" },
+            { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: "r2" } }] },
+          ],
+        },
+      })
+    );
+  });
+
+  it("해석할 수 없는 커서는 400", async () => {
+    const res = await request(app).get("/api/reviews?limit=2&cursor=garbage");
+    expect(res.status).toBe(400);
   });
 
   it("로그인하면 내 후기에 표시를 붙이고, 사진이 있으면 싣는다", async () => {

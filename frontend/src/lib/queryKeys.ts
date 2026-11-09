@@ -25,8 +25,10 @@ export const queryKeys = {
   },
   reviews: {
     all: ["reviews"] as const,
-    /** placeId가 없으면 전체 목록(마이탭이 isMine으로 거른다). */
-    list: (placeId?: string) => ["reviews", placeId ?? null] as const,
+    /** 내가 쓴 후기 전체(배열 캐시) — 마이탭·뱃지·내 후기 화면 */
+    mine: ["reviews", "mine"] as const,
+    /** 장소 상세 후기(무한 스크롤 캐시 — { pages: [{ items, nextCursor }] }) */
+    place: (placeId: string) => ["reviews", "place", placeId] as const,
   },
   reviewTags: {
     all: ["review-tags"] as const,

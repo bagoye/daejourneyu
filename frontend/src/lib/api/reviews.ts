@@ -1,10 +1,30 @@
 import { authFetch } from "./authFetch";
 import type { Review, ReviewTagOption } from "@/types";
 
-/** GET /api/reviews — placeId를 넘기면 해당 장소만, 안 넘기면 전체(마이탭 "내가 쓴 후기"용). */
-export async function fetchReviewsApi(placeId?: string): Promise<Review[]> {
-  const query = placeId ? `?placeId=${encodeURIComponent(placeId)}` : "";
-  const res = await authFetch(`/api/reviews${query}`);
+/**
+ * GET /api/reviews?mine=true — 내가 쓴 후기 전체(로그인 필요).
+ * 예전엔 전 사용자 후기를 받아 화면에서 isMine으로 걸렀다. 한 사용자 분량이라 끊지 않고 다 받는다
+ * (뱃지 계산이 전체 개수를 쓴다).
+ */
+export async function fetchMyReviewsApi(): Promise<Review[]> {
+  const res = await authFetch("/api/reviews?mine=true");
+  if (!res.ok) throw new Error(`GET /api/reviews?mine=true → ${res.status}`);
+  return res.json();
+}
+
+/** 장소 후기 한 페이지. nextCursor가 null이면 마지막 페이지다. */
+export interface ReviewPage {
+  items: Review[];
+  nextCursor: string | null;
+}
+
+export const PLACE_REVIEWS_PAGE_SIZE = 10;
+
+/** GET /api/reviews?placeId=&limit=&cursor= — 장소 상세 후기를 최신순으로 끊어서 받는다(사진이 data URL이라 무겁다). */
+export async function fetchPlaceReviewsPageApi(placeId: string, cursor: string | null): Promise<ReviewPage> {
+  const query = new URLSearchParams({ placeId, limit: String(PLACE_REVIEWS_PAGE_SIZE) });
+  if (cursor) query.set("cursor", cursor);
+  const res = await authFetch(`/api/reviews?${query}`);
   if (!res.ok) throw new Error(`GET /api/reviews → ${res.status}`);
   return res.json();
 }

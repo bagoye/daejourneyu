@@ -55,3 +55,40 @@ jobs:
         run: npm run typecheck
       - name: 테스트
         run: npm test
+
+  # 실제 PostgreSQL에 붙는 통합 테스트(동시성·트랜잭션·트리거·CASCADE). mock 단위 테스트로는
+  # 잠금·유니크 경합을 확인할 수 없어서 서비스 컨테이너를 띄워 따로 돌린다.
+  backend-integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: daejourneyu_test
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d daejourneyu_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgresql://test:test@127.0.0.1:54329/daejourneyu_test
+      DATABASE_URL: postgresql://test:test@127.0.0.1:54329/daejourneyu_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Prisma 클라이언트 생성
+        run: npx prisma generate
+      - name: 통합 테스트 (마이그레이션 적용 포함)
+        run: npm run test:int

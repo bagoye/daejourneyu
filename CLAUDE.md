@@ -19,8 +19,11 @@ daejourneyu/
 ├─ frontend/     Next.js 14 App Router + TS + Tailwind v4 + TanStack Query + Zustand + PWA
 │  ├─ CLAUDE.md  ← FE 작업 시 반드시 함께 읽을 것 (아키텍처·컨벤션·3인 분업표)
 │  └─ PLAN.md    ← 화면 인벤토리, 구조 결정 근거, 포팅 제외 화면 목록
-└─ backend/      Node.js + Express 4 + TS (스캐폴딩 단계)
-   └─ src/routes/  도메인별 라우터
+├─ backend/      Node.js + Express 4 + TS + Prisma + PostgreSQL
+│  └─ src/routes/  도메인별 라우터
+├─ ops-lab/      DB 운영 실습실(Docker) — PITR·보관 정책(54330, docs 06), 복제·장애 전환(replication/, 54331·54332, docs 07), PgBouncer(pgbouncer/, 6432, docs 08), 모니터링(monitoring/, Grafana 3001, docs 09)
+├─ .github/workflows/perf.yml  백엔드 PR 성능 게이트(k6, base·head 번갈아 측정 — backend/scripts/load, docs 10)
+└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(00 요약, 01~11)
 ```
 
 ## 실행
@@ -61,6 +64,18 @@ DB를 다시 띄운 뒤 백엔드를 재시작할 필요는 없다 — Prisma가
   `*.test.tsx`는 jsdom + Testing Library(컴포넌트·페이지·훅). 픽스처는 `src/test/`에 있다.
 - **백엔드**: 라우트는 supertest로 실제 라우터를 태우되 `lib/prisma`·`lib/auth`를 mock해서
   DB·`JWT_SECRET` 없이 돈다(`src/routes/posts.test.ts` 참고).
+- **백엔드 통합 테스트**(`backend/test/integration/*.int.test.ts`): 실제 PostgreSQL 16에서 동시성·트랜잭션·
+  트리거·CASCADE를 검증한다. `npm run db:test:up`(Docker, 127.0.0.1:54329) → `.env.test.example`을 `.env.test`로
+  복사 → `npm run test:int`. 기본 `npm test`에는 포함되지 않으며, 원격 호스트를 가리키면 시작 전에 중단된다.
+  `prisma dev`(PGlite)는 단일 연결이라 동시성 재현에 쓰지 않는다. 설계 근거는 `docs/db-optimization/`.
+- `Post.saves`는 **DB 트리거가 유지**한다(`migrations/20261109000000_post_saves_counter_trigger`) — 앱에서 직접
+  증감하지 않는다. 쓰기 경로를 추가할 때는 잠금 순서 **Course → 하위 테이블(CourseDay·PostSave)**을 지킨다.
+- `Post.searchText`(검색 문서)는 **앱이 유지**한다 — 게시물을 만들거나 caption·text를 바꾸는 경로는 반드시
+  `buildSearchText`로 함께 갱신한다(안 하면 그 글이 검색에 안 걸린다). 성능 실험 스크립트는 `backend/scripts/perf/`,
+  결과는 `docs/db-optimization/03-query-performance.md`.
+- 캐시(`lib/cache.ts`)는 `REDIS_URL`이 있으면 Redis, 없으면 메모리다. 게시물 건수 캐시는 **세대 키**라 글을 만들거나 고치거나 지우는
+  경로는 `bumpPostCounts()`를 부른다(안 하면 최대 60초 옛 건수). Redis 장애 시 원본 폴백 — `docs/db-optimization/11`.
+  API 부하·성능 회귀 게이트는 `bash backend/scripts/load/perf-gate.sh`(테스트 DB 필요, 결과 `backend/perf-out/`) — `docs/db-optimization/10`.
 
 변경 후에는 **`npm test`와 `npm run build`를 둘 다 통과시킨다.** 프론트 테스트 파일은 `next build`의
 타입 체크 대상이고, 백엔드 테스트 파일은 `tsconfig.json`에서 제외되어 `dist/`에 빌드되지 않는다.

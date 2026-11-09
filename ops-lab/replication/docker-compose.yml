@@ -1,0 +1,76 @@
+# 스트리밍 복제·장애 전환 실습 — primary 1 + standby 1. PITR 실습(ops-lab/docker-compose.yml)과 분리된 별도 프로젝트다.
+#
+#   docker compose -f ops-lab/replication/docker-compose.yml up -d --wait
+#   bash ops-lab/scripts/replication-drill.sh
+#   docker compose -f ops-lab/replication/docker-compose.yml down -v
+#
+# standby는 처음 뜰 때 primary에서 pg_basebackup -R(복제 설정 자동 작성) + 복제 슬롯으로 복제본을 만들고,
+# 이후 WAL을 실시간으로 받아 재생한다(hot standby — 읽기 전용 질의 가능). 계정은 실습용 값이다.
+name: djy-replication
+
+x-pg-common: &pg-common
+  image: postgres:16-bookworm
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d daejourneyu"]
+    interval: 2s
+    timeout: 3s
+    retries: 60
+
+services:
+  primary:
+    <<: *pg-common
+    container_name: djy-rep-primary
+    hostname: primary
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: daejourneyu
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      # 동기 복제는 실습 중에 ALTER SYSTEM으로 켜고 끈다(기본은 비동기)
+      - -c
+      - synchronous_commit=on
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+    volumes:
+      - primary-data:/var/lib/postgresql/data
+      - ./init-primary.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+    ports:
+      - "127.0.0.1:54331:5432"
+
+  standby:
+    <<: *pg-common
+    container_name: djy-rep-standby
+    hostname: standby
+    user: postgres
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: replpass
+      PGDATA: /var/lib/postgresql/data
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          echo "[standby] primary에서 베이스 백업으로 복제본 생성"
+          pg_basebackup -h primary -U replicator -D "$$PGDATA" -R -X stream -C -S standby1 -c fast
+          chmod 700 "$$PGDATA"
+        fi
+        exec postgres -c hot_standby=on -c shared_preload_libraries=pg_stat_statements -c hot_standby_feedback=on
+    volumes:
+      - standby-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:54332:5432"
+
+volumes:
+  primary-data:
+  standby-data:

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { usePetStore } from "@/stores/usePetStore";
-import { useReviews } from "@/hooks/useReviews";
+import { useMyReviews } from "@/hooks/useReviews";
 import { useMyPosts } from "@/hooks/usePosts";
 import { usePlaces } from "@/hooks/usePlaces";
 import { NO_SCHEDULES, useSchedules } from "@/hooks/useSchedules";
@@ -34,7 +34,7 @@ export function useMyBadges(): MyBadges {
   const isLoggedIn = useAuthStore((state) => state.isLoggedIn);
   const pets = usePetStore((state) => state.pets);
   const activePet = usePetStore((state) => state.activePet());
-  const { data: reviews = [] } = useReviews();
+  const { data: reviews = [] } = useMyReviews();
   // 뱃지가 보는 건 내 글이다(받은 좋아요 합계). 전체 목록은 서버 페이지 단위로 바뀌어 여기서 못 쓴다.
   // TODO(api): '이웃사랑'은 내가 남의 글에 누른 좋아요라 좋아요 영속화 뒤 별도 소스가 필요하다.
   const { data: posts } = useMyPosts("recent", isLoggedIn);

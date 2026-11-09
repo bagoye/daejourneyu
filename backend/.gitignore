@@ -9,3 +9,6 @@ dist
 .windsurf
 .claude
 skills-lock.json
+
+# 성능 게이트 결과(scripts/load/perf-gate.sh)
+perf-out

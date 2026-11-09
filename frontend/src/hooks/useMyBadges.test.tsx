@@ -6,14 +6,14 @@ import { usePetStore } from "@/stores/usePetStore";
 import { makeCourse, makePet, makeReview, makeSchedule, makeStop } from "@/test/fixtures";
 
 const hooks = vi.hoisted(() => ({
-  useReviews: vi.fn(),
+  useMyReviews: vi.fn(),
   useMyPosts: vi.fn(),
   usePlaces: vi.fn(),
   useCourses: vi.fn(),
   useSchedules: vi.fn(),
 }));
 
-vi.mock("@/hooks/useReviews", () => ({ useReviews: hooks.useReviews }));
+vi.mock("@/hooks/useReviews", () => ({ useMyReviews: hooks.useMyReviews }));
 vi.mock("@/hooks/usePosts", () => ({ useMyPosts: hooks.useMyPosts }));
 vi.mock("@/hooks/usePlaces", () => ({ usePlaces: hooks.usePlaces }));
 vi.mock("@/hooks/useSchedules", () => ({ NO_SCHEDULES: [], useSchedules: hooks.useSchedules }));
@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 8, 14, 12));
 
-  hooks.useReviews.mockReturnValue({ data: reviews });
+  hooks.useMyReviews.mockReturnValue({ data: reviews });
   hooks.useMyPosts.mockReturnValue({ data: [] });
   hooks.usePlaces.mockReturnValue({ data: [] });
 
@@ -82,7 +82,7 @@ describe("useMyBadges", () => {
     hooks.useCourses.mockReturnValue({ data: [] });
     hooks.useSchedules.mockReturnValue({ data: [] });
     usePetStore.setState({ pets: [], activePetIndex: 0 });
-    hooks.useReviews.mockReturnValue({ data: [] });
+    hooks.useMyReviews.mockReturnValue({ data: [] });
 
     const { result } = renderHook(() => useMyBadges());
 

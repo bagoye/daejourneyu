@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createReviewApi,
   deleteReviewApi,
-  fetchReviewsApi,
+  fetchMyReviewsApi,
+  fetchPlaceReviewsPageApi,
   fetchReviewTagsApi,
 } from "@/lib/api/reviews";
 import { makeReview } from "@/test/fixtures";
@@ -30,27 +31,34 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("fetchReviewsApi", () => {
-  it("장소를 안 넘기면 전체(마이탭용)를 받아온다", async () => {
+describe("fetchMyReviewsApi", () => {
+  it("내 후기만 서버에 요청한다(전체를 받아 거르지 않는다)", async () => {
     const reviews = [makeReview()];
     fetchMock.mockResolvedValue(jsonResponse(reviews));
 
-    await expect(fetchReviewsApi()).resolves.toEqual(reviews);
-    expect(lastCall()[0]).toBe("/api/reviews");
+    await expect(fetchMyReviewsApi()).resolves.toEqual(reviews);
+    expect(lastCall()[0]).toBe("/api/reviews?mine=true");
     expect(lastCall()[1].credentials).toBe("include");
   });
+});
 
-  it("장소 id는 URL 인코딩해서 붙인다", async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]));
+describe("fetchPlaceReviewsPageApi", () => {
+  it("장소 id는 인코딩하고, 페이지 크기와 커서를 붙인다", async () => {
+    const page = { items: [makeReview()], nextCursor: "v1.abc" };
+    // Response 본문은 한 번만 읽을 수 있어 호출마다 새로 만든다
+    fetchMock.mockImplementation(async () => jsonResponse(page));
 
-    await fetchReviewsApi("장소 1/2");
+    await expect(fetchPlaceReviewsPageApi("장소 1/2", null)).resolves.toEqual(page);
+    // URLSearchParams 규칙(공백은 +)으로 인코딩된다 — 서버(Express)가 그대로 되돌린다
+    expect(lastCall()[0]).toBe(`/api/reviews?${new URLSearchParams({ placeId: "장소 1/2", limit: "10" })}`);
 
-    expect(lastCall()[0]).toBe(`/api/reviews?placeId=${encodeURIComponent("장소 1/2")}`);
+    await fetchPlaceReviewsPageApi("place-1", "v1.abc");
+    expect(lastCall()[0]).toBe("/api/reviews?placeId=place-1&limit=10&cursor=v1.abc");
   });
 
   it("실패하면 상태 코드를 담아 던진다", async () => {
     fetchMock.mockResolvedValue(jsonResponse({}, 503));
-    await expect(fetchReviewsApi()).rejects.toThrow("GET /api/reviews → 503");
+    await expect(fetchPlaceReviewsPageApi("place-1", null)).rejects.toThrow("GET /api/reviews → 503");
   });
 });
 

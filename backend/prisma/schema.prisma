@@ -86,6 +86,9 @@ model Course {
   posts     Post[]
   /// 이 코스가 '담기'로 만들어진 사본이라면 그 기록. 담기를 취소하면 코스도 같이 사라진다.
   savedFrom PostSave[]
+
+  /// 내 코스 보관함(GET /api/courses: userId = ? ORDER BY createdAt). FK인데 인덱스가 없어 매번 전체 스캔했다.
+  @@index([userId, createdAt])
 }
 
 model CourseDay {
@@ -134,6 +137,9 @@ model CourseScheduleFestival {
 
   courseScheduleId String
   courseSchedule CourseSchedule @relation(fields: [courseScheduleId], references: [id], onDelete: Cascade)
+
+  /// FK 인덱스 — 일정 삭제 CASCADE·일정 조회(IN) 때 전체 스캔을 막는다(인덱스 없는 FK 점검 쿼리로 발견).
+  @@index([courseScheduleId])
 }
 
 model Place {
@@ -220,8 +226,10 @@ model Post {
   /// 반려동물 MBTI 풀네임. 아직 검사 전이면 안내 문구가 그대로 들어온다.
   petTypeName String
 
-  /// TODO(api): 좋아요/담기 토글이 서버로 넘어오기 전까지는 0에서 움직이지 않는다.
+  /// TODO(api): 좋아요 토글이 서버로 넘어오기 전까지는 0에서 움직이지 않는다.
   likes Int @default(0)
+  /// PostSave 행 수의 비정규화 값. 앱은 쓰지 않고 PostSave INSERT/DELETE 트리거가 유지한다
+  /// (migrations/20261109000000_post_saves_counter_trigger, CHECK saves >= 0 포함).
   saves Int @default(0)
 
   createdAt DateTime @default(now())
@@ -233,11 +241,20 @@ model Post {
   courseId String?
   course   Course? @relation(fields: [courseId], references: [id], onDelete: SetNull)
 
+  /// 검색 문서(제목·한마디·작성자·태그·방문 장소명·자치구를 줄바꿈으로 이은 값). 앱이 작성·수정 때 만든다 —
+  /// routes/posts.ts buildSearchText. 응답에는 내보내지 않는다.
+  searchText String @default("")
+
   stops PostStop[]
   savedBy PostSave[]
 
   @@index([userId])
   @@index([courseId])
+  /// 둘러보기 최신순 / 담기순 목록 + 값 커서. 근거·측정은 docs/db-optimization/03-query-performance.md
+  @@index([createdAt, id])
+  @@index([saves, createdAt, id])
+  /// 검색: 검색 문서 부분일치(ILIKE)를 pg_trgm GIN으로.
+  @@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 /// 게시물에 박제된 방문 장소. 코스가 나중에 바뀌어도 글에 보이는 동선은 올릴 때 그대로여야 한다.
@@ -259,7 +276,8 @@ model PostStop {
 }
 
 /// 둘러보기에서 남의 코스를 내 보관함에 담은 기록.
-/// `Post.saves`는 이 행 수를 비정규화해 들고 있는 값이라, 담기/취소는 항상 트랜잭션으로 같이 움직인다.
+/// `Post.saves`는 이 행 수를 비정규화한 값이고, 이 테이블의 트리거가 INSERT/DELETE마다 맞춰 준다 —
+/// CASCADE 삭제처럼 앱을 거치지 않는 경로도 포함된다.
 model PostSave {
   id String @id @default(cuid())
 
@@ -278,4 +296,7 @@ model PostSave {
   /// 같은 글을 두 번 담을 수 없다 — 담긴 수가 부풀지 않게 DB가 막는다.
   @@unique([userId, postId])
   @@index([postId])
+  /// FK 인덱스 — 코스를 지울 때 ON DELETE SET NULL이 이 컬럼으로 PostSave를 찾는다. 없으면 담기 전체를
+  /// 스캔했다(담기 30만 건 기준 코스 삭제 13ms 중 11ms — pg_stat_statements로 발견).
+  @@index([courseId])
 }
