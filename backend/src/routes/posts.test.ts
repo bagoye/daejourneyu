@@ -27,6 +27,7 @@ vi.mock("../lib/auth", () => ({
 }));
 
 import postsRouter, { buildSearchText } from "./posts";
+import { invalidateCached } from "../lib/cache";
 
 const AS_USER_1 = "daejourneyu_token=valid:user-1";
 const INCLUDE = { stops: { orderBy: { order: "asc" } } };
@@ -83,6 +84,8 @@ beforeEach(() => {
   prisma.postSave.findMany.mockResolvedValue([]);
   // 트랜잭션 안의 tx도 같은 mock을 쓴다 — 무엇이 어떤 순서로 불렸는지만 확인하면 된다.
   prisma.$transaction.mockImplementation(async (fn: (tx: typeof prisma) => unknown) => fn(prisma));
+  // 전체 건수 캐시는 모듈 전역이라 테스트끼리 섞이지 않게 매번 비운다
+  invalidateCached("posts:count:all");
 });
 
 describe("GET /api/posts", () => {
@@ -287,6 +290,40 @@ describe("GET /api/posts", () => {
     const recentCursor = "v1." + Buffer.from(JSON.stringify(["2026-08-12T09:00:00.000Z", "b"])).toString("base64url");
     expect((await request(app).get(`/api/posts?cursor=${recentCursor}`)).status).toBe(400);
     expect((await request(app).get("/api/posts?cursor=v1.%%%")).status).toBe(400);
+  });
+
+  it("필터 없는 전체 건수는 잠시 공유하고, 검색·필터 건수는 매번 센다", async () => {
+    prisma.post.count.mockResolvedValue(42);
+
+    const a = await request(app).get("/api/posts");
+    const b = await request(app).get("/api/posts?sort=recent");
+    expect([a.body.total, b.body.total]).toEqual([42, 42]);
+    expect(prisma.post.count).toHaveBeenCalledTimes(1);
+
+    await request(app).get("/api/posts?q=갑천");
+    await request(app).get("/api/posts?q=갑천");
+    expect(prisma.post.count).toHaveBeenCalledTimes(3);
+  });
+
+  it("글을 쓰면 전체 건수 캐시를 비워 다음 목록이 다시 센다", async () => {
+    await request(app).get("/api/posts");
+    prisma.post.create.mockResolvedValue(postRow({ userId: "user-1" }));
+    await request(app)
+      .post("/api/posts")
+      .set("Cookie", AS_USER_1)
+      .send({
+        caption: "새 코스",
+        text: "",
+        tags: [],
+        authorName: "콩이네",
+        authorEmoji: "🐶",
+        petTypeName: "유형",
+        stops: [{ placeId: "p", name: "장소", category: "산책", district: "서구", condition: "전 견종", petFriendly: true }],
+      })
+      .expect(201);
+    await request(app).get("/api/posts");
+
+    expect(prisma.post.count).toHaveBeenCalledTimes(2);
   });
 });
 

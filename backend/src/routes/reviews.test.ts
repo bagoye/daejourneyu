@@ -79,7 +79,7 @@ afterEach(() => {
 });
 
 describe("GET /api/reviews", () => {
-  it("비로그인도 최신순 전체를 받고, 화면 필드 모양으로 내려준다", async () => {
+  it("비로그인도 최신순으로(예전 형식은 100건 상한) 받고, 화면 필드 모양으로 내려준다", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     prisma.review.findMany.mockResolvedValue([reviewRow()]);
@@ -92,6 +92,8 @@ describe("GET /api/reviews", () => {
       // 같은 시각에 쓴 후기도 순서가 흔들리지 않게 id로 동점을 정리한다
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       include: INCLUDE,
+      // limit 없는 예전 형식은 최신 100건 상한 — 파라미터 없는 요청 하나가 전체 후기를 받아 가지 않게
+      take: 100,
     });
     expect(res.body).toEqual([
       {
@@ -127,6 +129,8 @@ describe("GET /api/reviews", () => {
     expect(prisma.review.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { AND: [{ authorId: "user-1" }] } })
     );
+    // 내 후기는 뱃지 계산에 전체 개수가 필요해 상한을 두지 않는다
+    expect(prisma.review.findMany.mock.calls[0][0]).not.toHaveProperty("take");
   });
 
   it("mine=true는 로그인이 필요하다", async () => {

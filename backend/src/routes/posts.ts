@@ -4,6 +4,8 @@ import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
 import { asyncHandler } from "../lib/asyncHandler";
+import { cached, invalidateCached } from "../lib/cache";
+import { buildSearchText } from "../lib/searchText";
 import {
   cursorDate,
   decodeCursor,
@@ -177,23 +179,21 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
+// 검색 문서는 lib/searchText.ts — 태그·PostStop은 글에 박제된 값이라 바뀌지 않고, 고칠 수 있는
+// caption·text가 바뀔 때마다 다시 만든다. 테스트가 이 모듈에서 가져다 쓰므로 다시 내보낸다.
+export { buildSearchText };
+
+const ALL_POSTS_COUNT_KEY = "posts:count:all";
+const ALL_POSTS_COUNT_TTL_MS = 30_000;
+
 /**
- * 검색 문서. 필드 사이를 줄바꿈으로 이어, 한 줄짜리 검색어가 두 필드에 걸쳐 매칭되지 않게 한다
- * (필드별로 따로 부분일치하던 예전 결과와 같다). 태그·PostStop은 글에 박제된 값이라 바뀌지 않고,
- * 글에서 고칠 수 있는 caption·text가 바뀔 때마다 다시 만든다. 마이그레이션의 백필 SQL과 같은 형식이다
- * (migrations/20261109010000_post_search_and_list_indexes).
+ * 목록 위 "총 N개"용 건수. 필터 없는 전체 건수는 둘러보기 첫 화면마다 다시 세던 값이라 30초 동안 공유한다 —
+ * 실제 부하 측정(pg_stat_statements)에서 DB 시간의 14.5%가 이 COUNT였고, 글 수에 비례해 커진다.
+ * 이 서버에서 글을 쓰거나 지우면 바로 비운다. 필터·검색·내 글 건수는 조건마다 달라 캐시하지 않는다.
  */
-export function buildSearchText(
-  post: { caption: string; text: string; authorName: string; tags: string[] },
-  stops: { name: string; district: string }[]
-): string {
-  return [
-    post.caption,
-    post.text,
-    post.authorName,
-    ...post.tags,
-    ...stops.flatMap((s) => [s.name, s.district]),
-  ].join("\n");
+function countPosts(where: Prisma.PostWhereInput | undefined): Promise<number> {
+  if (where) return prisma.post.count({ where });
+  return cached(ALL_POSTS_COUNT_KEY, ALL_POSTS_COUNT_TTL_MS, () => prisma.post.count());
 }
 
 type PostSort = "recent" | "saves";
@@ -319,7 +319,7 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const last = rows[rows.length - 1];
   const nextCursor = rows.length === limit && last ? encodeCursor(postCursorValues(sort, last)) : null;
   // 전체 건수는 첫 페이지에서만 센다 — 검색 결과 개수를 보여주는 용도라 이어 받을 때는 필요 없다.
-  const total = rawCursor ? undefined : await prisma.post.count({ where });
+  const total = rawCursor ? undefined : await countPosts(where);
 
   const savedPostIds = await loadSavedPostIds(req.userId, rows.map((row) => row.id));
 
@@ -375,6 +375,7 @@ router.post("/", requireAuth, asyncHandler(async (req, res) => {
     include: postWithRelations,
   });
 
+  invalidateCached(ALL_POSTS_COUNT_KEY);
   res.status(201).json(toFeedPost(created, req.userId, new Set()));
 }));
 
@@ -622,6 +623,7 @@ router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   }
 
   await prisma.post.delete({ where: { id: req.params.id } });
+  invalidateCached(ALL_POSTS_COUNT_KEY);
   res.status(204).send();
 }));
 

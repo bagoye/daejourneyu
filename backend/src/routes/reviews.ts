@@ -93,6 +93,8 @@ const router = Router();
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
+/** limit 없는 예전 형식 요청의 상한(내 후기 제외). */
+const LEGACY_LIST_CAP = 100;
 const REVIEW_CURSOR_SHAPE: ("string" | "number")[] = ["string", "string"]; // createdAt(ISO), id
 
 function firstQueryValue(raw: unknown): string | undefined {
@@ -107,8 +109,8 @@ function firstQueryValue(raw: unknown): string | undefined {
  *  - `placeId=xxx`: 장소 상세용.
  *  - `mine=true`: 내가 쓴 후기만(로그인 필요). 예전엔 마이탭이 **전 사용자 후기 전체**를 받아 화면에서
  *    isMine으로 걸렀다 — 후기 수에 비례해 응답이 커지고, 목록에 data URL 사진까지 실려 있었다.
- *  - `limit`(+`cursor`): 보내면 `{ items, nextCursor }`로 끊어서 준다. 보내지 않으면 예전처럼 배열 전체
- *    (하위 호환). 내 후기는 사용자 한 명 분량이라 뱃지 계산이 전체를 쓰고, 장소 후기는 사진 때문에 끊는다.
+ *  - `limit`(+`cursor`): 보내면 `{ items, nextCursor }`로 끊어서 준다. 보내지 않으면 예전처럼 배열
+ *    (하위 호환, 최신 100건 상한). 내 후기는 사용자 한 명 분량이라 뱃지 계산이 전체를 쓰고, 장소 후기는 사진 때문에 끊는다.
  *
  * 정렬은 createdAt 내림차순 + id(동시각 동점 정리). 커서는 lib/cursor.ts의 값 기반 커서다.
  */
@@ -127,12 +129,15 @@ router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   if (mine) filters.push({ authorId: req.userId! });
   const orderBy: Prisma.ReviewOrderByWithRelationInput[] = [{ createdAt: "desc" }, { id: "desc" }];
 
-  // 하위 호환: limit이 없으면 예전 응답(배열 전체)
+  // 하위 호환: limit이 없으면 예전 응답 모양(배열). 단 내 후기가 아니면 최신 LEGACY_LIST_CAP건까지만 준다 —
+  // 상한이 없으면 파라미터 없는 요청 하나가 전 사용자 후기를 통째로 받아 간다(10만 건 기준 133MB · 6.3초,
+  // 느린 쿼리 로그로 발견). 지금 프론트는 이 형식을 쓰지 않고, 캐시된 옛 PWA 클라이언트만 여기로 온다.
   if (rawLimit === undefined) {
     const rows = await prisma.review.findMany({
       where: filters.length > 0 ? { AND: filters } : undefined,
       orderBy,
       include: reviewWithRelations,
+      ...(mine ? {} : { take: LEGACY_LIST_CAP }),
     });
     return res.json(rows.map((row) => toReview(row, req.userId)));
   }

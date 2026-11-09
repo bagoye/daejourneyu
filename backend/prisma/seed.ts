@@ -4,7 +4,31 @@
  * 캘린더·보관함 화면을 다양한 케이스로 볼 수 있도록 종류를 늘렸다.
  * ⚠ 한글 카피는 프론트 CLAUDE.md와 마찬가지로 잠정 데이터로 취급한다.
  */
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
+import { buildSearchText } from "../src/lib/searchText";
+
+/**
+ * 안전장치: 시드는 목데이터(가짜 사용자·코스·게시물)를 넣는다. docs/deployment.md 절차대로 backend/.env에
+ * Supabase 주소를 넣어 둔 상태에서 습관적으로 db:seed를 돌리면 운영 DB에 그대로 섞인다 — 로컬이 아니면 멈춘다.
+ * 정말 원격(스테이징 등)에 넣어야 하면 ALLOW_REMOTE_SEED=true를 명시한다.
+ */
+function assertSafeTarget() {
+  const raw = process.env.DATABASE_URL ?? "";
+  let host = "";
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    throw new Error("DATABASE_URL을 해석할 수 없습니다");
+  }
+  const local = host === "localhost" || host === "127.0.0.1";
+  if (!local && process.env.ALLOW_REMOTE_SEED !== "true") {
+    throw new Error(
+      `시드 중단: DATABASE_URL이 원격(${host})을 가리킵니다. 목데이터를 넣으려면 ALLOW_REMOTE_SEED=true를 명시하세요.`
+    );
+  }
+}
+assertSafeTarget();
 
 const prisma = new PrismaClient();
 
@@ -337,9 +361,12 @@ async function main() {
   }
 
   for (const post of posts) {
+    // 검색 문서는 라우터와 같은 함수로 만든다 — 빠뜨리면 시드 글이 검색에 안 걸린다(실제로 빠졌던 적 있음).
+    // 이미 있는 시드 글도 검색 문서만은 다시 맞춘다(파생값이라 덮어써도 안전).
+    const searchText = buildSearchText(post, post.stops);
     await prisma.post.upsert({
       where: { id: post.id },
-      update: {},
+      update: { searchText },
       create: {
         id: post.id,
         caption: post.caption,
@@ -348,6 +375,7 @@ async function main() {
         authorName: post.authorName,
         authorEmoji: post.authorEmoji,
         petTypeName: post.petTypeName,
+        searchText,
         likes: post.likes,
         userId: post.userId,
         courseId: post.courseId ?? null,
