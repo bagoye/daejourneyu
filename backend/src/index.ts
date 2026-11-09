@@ -21,6 +21,7 @@ import authKakaoRouter from "./routes/authKakao";
 import postsRouter from "./routes/posts";
 import reviewsRouter from "./routes/reviews";
 import festivalsRouter from "./routes/festivals";
+import { errorHandler } from "./lib/errorHandler";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -55,11 +56,8 @@ app.use("/api/posts", postsRouter);
 app.use("/api/reviews", reviewsRouter);
 app.use("/api/festivals", festivalsRouter);
 
-// 라우터에서 넘어온 예외를 500으로 변환한다 — 스택은 서버 로그에만 남긴다.
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("[api] 처리 중 오류:", err);
-  res.status(500).json({ error: "서버에서 문제가 발생했어요. 잠시 후 다시 시도해주세요" });
-});
+// 라우터에서 넘어온 예외를 상태 코드로 변환한다(Prisma 경합 오류는 4xx, 나머지는 500).
+app.use(errorHandler);
 
 app.listen(PORT, () => {
   console.log(`🐾 대저니유 API listening on http://localhost:${PORT}`);

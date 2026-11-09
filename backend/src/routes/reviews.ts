@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { requireAuth } from "../middleware/requireAuth";
 import { optionalAuth } from "../middleware/optionalAuth";
+import { asyncHandler } from "../lib/asyncHandler";
 
 /** 프론트 src/types/review.ts의 ReviewTagOption과 필드명을 맞춘다. */
 type ReviewTagOption = {
@@ -90,7 +91,7 @@ function validateReviewInput(body: unknown): body is ReviewCreateInput {
 const router = Router();
 
 // GET /api/reviews?placeId=xxx — 장소 상세의 후기 목록. 비로그인도 볼 수 있고, 로그인했으면 isMine이 붙는다.
-router.get("/", optionalAuth, async (req, res) => {
+router.get("/", optionalAuth, asyncHandler(async (req, res) => {
   const { placeId } = req.query;
   const rows = await prisma.review.findMany({
     where: typeof placeId === "string" ? { placeId } : undefined,
@@ -98,20 +99,20 @@ router.get("/", optionalAuth, async (req, res) => {
     include: reviewWithRelations,
   });
   res.json(rows.map((row) => toReview(row, req.userId)));
-});
+}));
 
 // GET /api/reviews/tags — 후기 작성 화면이 쓰는 태그 사전(분야별로 이미 정렬해 내려준다).
 // 자유 문자열 태그를 막기 위한 유일한 출처이므로, 여기 없는 code는 POST에서 전부 거부된다.
-router.get("/tags", async (_req, res) => {
+router.get("/tags", asyncHandler(async (_req, res) => {
   const tags = await prisma.reviewTagOption.findMany({
     where: { isActive: true },
     orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
   });
   res.json(tags.map((t) => ({ code: t.code, label: t.label, category: t.category })));
-});
+}));
 
 // POST /api/reviews — 후기 작성. 사진·본문은 선택, 태그는 1~5개 필수(사전에 없는 code는 거부).
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", requireAuth, asyncHandler(async (req, res) => {
   if (!validateReviewInput(req.body)) {
     return res.status(400).json({ error: "태그는 1~5개, 형식에 맞게 보내주세요" });
   }
@@ -137,10 +138,10 @@ router.post("/", requireAuth, async (req, res) => {
   });
 
   res.status(201).json(toReview(created, req.userId));
-});
+}));
 
 // DELETE /api/reviews/:id — 내 후기 삭제. 남의 후기면 존재 여부도 알리지 않고 404로 통일한다.
-router.delete("/:id", requireAuth, async (req, res) => {
+router.delete("/:id", requireAuth, asyncHandler(async (req, res) => {
   const existing = await prisma.review.findUnique({ where: { id: req.params.id } });
   if (!existing || existing.authorId !== req.userId) {
     return res.status(404).json({ error: "후기를 찾을 수 없어요" });
@@ -148,6 +149,6 @@ router.delete("/:id", requireAuth, async (req, res) => {
 
   await prisma.review.delete({ where: { id: req.params.id } });
   res.status(204).send();
-});
+}));
 
 export default router;
