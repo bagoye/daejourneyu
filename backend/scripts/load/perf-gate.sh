@@ -15,6 +15,7 @@
 #           PG_URL(postgresql://test:test@127.0.0.1:54329) PG_CONTAINER(psql이 없을 때 docker exec 대상)
 #           DB_PARAMS(앱 접속 URL 쿼리, 기본 pgbouncer=true — 운영(트랜잭션 풀러)과 같은 statement 방식)
 #           BASE_DB_PARAMS·HEAD_DB_PARAMS(쪽별 덮어쓰기) · BASE_DB_SQL·HEAD_DB_SQL(시드 후 그 DB에 실행할 설정 SQL)
+#           BASE_APP_ENV·HEAD_APP_ENV(서버에 줄 추가 환경변수, 예: "REDIS_URL=redis://127.0.0.1:63799")
 #           → 같은 코드에서 접속 설정만 바꾼 A/B 실험에 쓴다(docs/db-optimization/10 §5)
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
@@ -81,7 +82,9 @@ prepare() { # 이름 백엔드디렉터리 포트
   psql_db "$db" -c "VACUUM ANALYZE" >/dev/null
   echo "   시드 $((SECONDS - t0))초 · 게시물 $(psql_db "$db" -c 'SELECT count(*) FROM "Post"')건"
   local pvar=${side^^}_DB_PARAMS svar=${side^^}_DB_SQL
-  local params=${!pvar-$DB_PARAMS} extra_sql=${!svar:-}
+  local evar=${side^^}_APP_ENV
+  local params=${!pvar-$DB_PARAMS} extra_sql=${!svar:-} app_env=${!evar:-}
+  [[ -n $app_env ]] && echo "   앱 환경: $app_env"
   [[ -n $extra_sql ]] && { psql_db "$db" -c "$extra_sql" >/dev/null; echo "   DB 설정: $extra_sql"; }
   local app_url=$url${params:+?$params}
   echo "   앱 접속: $db${params:+?$params}"
@@ -91,8 +94,9 @@ prepare() { # 이름 백엔드디렉터리 포트
       || { echo "[$side] 빌드 실패:" >&2; tail -20 "$OUT_DIR/build-$side.log" >&2; exit 1; }
     BUILT+=("$dir")
   fi
-  (cd "$dir" && PORT=$port DATABASE_URL=$app_url DIRECT_URL=$url JWT_SECRET=$JWT_SECRET SLOW_QUERY_MS=0 NODE_ENV=production \
-    exec node dist/index.js > "$OUT_DIR/server-$side.log" 2>&1) &
+  # shellcheck disable=SC2086  # app_env는 KEY=VAL 목록이라 단어 분리가 의도다
+  (cd "$dir" && exec env $app_env PORT=$port DATABASE_URL=$app_url DIRECT_URL=$url JWT_SECRET=$JWT_SECRET SLOW_QUERY_MS=0 NODE_ENV=production \
+    node dist/index.js > "$OUT_DIR/server-$side.log" 2>&1) &
   PIDS+=($!)
   for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/health" >/dev/null && return; sleep 0.5; done
   echo "[$side] 서버가 뜨지 않았다:" >&2; cat "$OUT_DIR/server-$side.log" >&2; exit 1

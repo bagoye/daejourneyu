@@ -23,7 +23,7 @@ daejourneyu/
 │  └─ src/routes/  도메인별 라우터
 ├─ ops-lab/      DB 운영 실습실(Docker) — PITR·보관 정책(54330, docs 06), 복제·장애 전환(replication/, 54331·54332, docs 07), PgBouncer(pgbouncer/, 6432, docs 08), 모니터링(monitoring/, Grafana 3001, docs 09)
 ├─ .github/workflows/perf.yml  백엔드 PR 성능 게이트(k6, base·head 번갈아 측정 — backend/scripts/load, docs 10)
-└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(01~10)
+└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(01~11)
 ```
 
 ## 실행
@@ -73,6 +73,8 @@ DB를 다시 띄운 뒤 백엔드를 재시작할 필요는 없다 — Prisma가
 - `Post.searchText`(검색 문서)는 **앱이 유지**한다 — 게시물을 만들거나 caption·text를 바꾸는 경로는 반드시
   `buildSearchText`로 함께 갱신한다(안 하면 그 글이 검색에 안 걸린다). 성능 실험 스크립트는 `backend/scripts/perf/`,
   결과는 `docs/db-optimization/03-query-performance.md`.
+- 캐시(`lib/cache.ts`)는 `REDIS_URL`이 있으면 Redis, 없으면 메모리다. 게시물 건수 캐시는 **세대 키**라 글을 만들거나 고치거나 지우는
+  경로는 `bumpPostCounts()`를 부른다(안 하면 최대 60초 옛 건수). Redis 장애 시 원본 폴백 — `docs/db-optimization/11`.
   API 부하·성능 회귀 게이트는 `bash backend/scripts/load/perf-gate.sh`(테스트 DB 필요, 결과 `backend/perf-out/`) — `docs/db-optimization/10`.
 
 변경 후에는 **`npm test`와 `npm run build`를 둘 다 통과시킨다.** 프론트 테스트 파일은 `next build`의
