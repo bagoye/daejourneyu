@@ -23,7 +23,7 @@ daejourneyu/
 │  └─ src/routes/  도메인별 라우터
 ├─ ops-lab/      DB 운영 실습실(Docker) — PITR·보관 정책(54330, docs 06), 복제·장애 전환(replication/, 54331·54332, docs 07), PgBouncer(pgbouncer/, 6432, docs 08), 모니터링(monitoring/, Grafana 3001, docs 09)
 ├─ .github/workflows/perf.yml  백엔드 PR 성능 게이트(k6, base·head 번갈아 측정 — backend/scripts/load, docs 10)
-└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(01~11)
+└─ docs/db-optimization/  정합성·성능·운영 작업의 근거와 측정 결과(00 요약, 01~11)
 ```
 
 ## 실행

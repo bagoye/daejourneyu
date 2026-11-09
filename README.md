@@ -4,7 +4,8 @@
 
 - 배포: https://daejourneyu.vercel.app
 - 팀 저장소(배포 기준 코드, `develop` 브랜치): https://github.com/seolkimleeseon/daejourneyu
-- 이 저장소: 팀 저장소의 개인 포크. 팀 작업 이후의 리팩토링·테스트·CI 작업이 들어 있다([아래](#팀-작업-이후-개인-포크에서-한-작업) 참고).
+- 이 저장소: 팀 저장소의 개인 포크. 팀 작업 이후의 리팩토링·테스트·CI 작업과 **백엔드·DB 신뢰성 작업**(정합성·성능·백업·복제·모니터링·부하 테스트·캐시)이 들어 있다([아래](#팀-작업-이후-개인-포크에서-한-작업) 참고).
+- **백엔드·DB 작업 요약(한 장)**: [`docs/db-optimization/00-portfolio.md`](docs/db-optimization/00-portfolio.md)
 
 <!-- 대표 화면 캡처: 홈 / 댕댕지도 / 코스 만들기 / 코스 상세(동선 지도) 4장 -->
 <!-- ![대표 화면](docs/images/screens.png) -->
@@ -17,7 +18,7 @@
 |---|---|
 | 공모전 | 2026 관광데이터 활용 공모전 출품작 |
 | 팀 | 4인 — 기획은 4인 공동, 개발은 3인 |
-| 기간 | 2026-08-12 ~ 2026-09-21 (커밋 기준). 개인 포크 작업 2026-10 |
+| 기간 | 2026-08-12 ~ 2026-09-21 (커밋 기준). 개인 포크 작업 2026-10 ~ 2026-11 |
 | 서비스 방향 | 반려동물 전용 서비스가 아니라, 대전 관광 서비스에 "반려동물 동반 여부" 필터를 더한 것 |
 
 동반 여부를 예/아니오 하나로 뭉치지 않는다. 장소마다 `petFriendly`(동반 가능 여부)와 `condition`
@@ -45,7 +46,7 @@
 | 백엔드 · 데이터 | 공공데이터 API 연동(관광공사·대전시·식약처·기상청·고캠핑·문체부 동반시설), 카카오 로컬 API(지오코딩·키워드·이미지 검색), 장소 목록 실시간 집계 `/api/places` |
 | 백엔드 · 기능 | 코스 CRUD·일정 API, AI 코스 추천(`/api/ai/course-suggestion`), 아티클 "도움돼요" 저장 |
 | 배포·운영 | Vercel·Railway·Supabase 배포와 배포 가이드, Safari·PWA 로그인 문제 수정, 코스 저장 시 서버 다운 장애 수정 |
-| 개인 포크 | TanStack Query로 서버 상태 일원화, MSW 기반 화면 테스트, ESLint·GitHub Actions CI ([아래](#팀-작업-이후-개인-포크에서-한-작업)) |
+| 개인 포크 | TanStack Query로 서버 상태 일원화, MSW 기반 화면 테스트, ESLint·GitHub Actions CI, 백엔드·DB 정합성·성능·운영 작업 ([아래](#팀-작업-이후-개인-포크에서-한-작업)) |
 
 **팀 작업** (내가 하지 않은 부분)
 
@@ -70,6 +71,7 @@
 | AI | Google Gemini (`@google/genai`) | 무료 티어로 운영하기 위해 Anthropic API에서 전환했다 |
 | 외부 API | 카카오 로그인·지도·공유·로컬, 공공데이터포털·대전시 오픈 API | |
 | 테스트 | Vitest 4, Testing Library, supertest (+ 포크: MSW 2) | 프론트·백엔드가 같은 러너를 쓴다. TS·ESM 설정 없이 바로 돈다 |
+| DB 운영·성능 (포크) | PostgreSQL 16(트리거·pg_trgm·pg_stat_statements·PITR·스트리밍 복제), PgBouncer, Prometheus·Grafana, k6, Redis, Docker Compose | 실제 장애·부하를 로컬에서 재현해 측정하기 위해. 운영(Supabase)과 분리된 실습 환경(`ops-lab/`, 테스트 컨테이너)에서만 돌린다 |
 | 배포 | Vercel / Railway / Supabase | Vercel은 Next.js를 설정 없이 지원하고, Railway는 서버리스 제약(콜드 스타트·타임아웃) 없이 Express를 컨테이너로 그대로 띄운다(배포 문서) |
 
 ## 아키텍처
@@ -98,13 +100,14 @@ flowchart LR
 daejourneyu/
 ├─ frontend/   Next.js — app/(shell)/{home,map,schedule,feed,my}, src/{components,hooks,stores,lib,mocks,types}
 ├─ backend/    Express — src/routes(도메인별 라우터), src/lib(외부 API 클라이언트·집계), prisma/
-└─ docs/       배포 가이드 등
+├─ ops-lab/   (포크) DB 운영 실습 — PITR, 복제·장애 전환, PgBouncer, 모니터링(Docker Compose)
+└─ docs/       배포 가이드, db-optimization/(포크: 백엔드·DB 작업 근거와 측정 결과 00~11)
 ```
 
 ## 기술적 판단
 
 각 항목은 문제 → 판단 → 결과 순서다. 1~4는 배포된 서비스(팀 저장소 `develop`)에 들어간 작업이고,
-5~6은 팀 작업 이후 개인 포크에서 한 작업이다.
+5~7은 팀 작업 이후 개인 포크에서 한 작업이다.
 
 ### 1. 장소 데이터: DB 적재 대신 실시간 집계 + 짧은 캐시
 
@@ -225,9 +228,29 @@ mock 기반 테스트가 무엇을 보장하지 못하는지 확인한 계기가
 재조회 응답을 붙잡아 둔 상태에서 확인하도록 고쳐, 롤백만으로 화면이 돌아오는지를 검증한다.
 대상 코드를 일부러 망가뜨려 각 테스트가 실패하는 것을 확인했다.
 
+### 7. 백엔드·DB 신뢰성: 정합성 → 성능 → 운영 (개인 포크)
+
+**문제.** 동시 요청에서 담기가 대부분 실패하고(409) 교착이 생겼다. 검색은 10만 건에서 650~720ms 걸렸다.
+백업·복제·알림은 "설정돼 있다"는 것 말고는 실제로 동작하는지 확인한 적이 없었다.
+
+**판단.** 실제 PostgreSQL 16과 고정 시드 합성 데이터(게시물 10만 건)로 문제를 재현하고, 원인의 증거(서버 로그·실행계획·지표)를
+확인한 뒤 고치고, 같은 방법으로 다시 쟀다. 운영 DB와 실제 사용자 데이터는 쓰지 않았다.
+
+**결과.**
+
+| 영역 | 결과 |
+|---|---|
+| 정합성 | 동시 담기 실패 8~9/10 → 0, 교착 0(잠금 순서), 담기 수는 DB 트리거가 유지 |
+| 성능 | 검색 API 648~719ms → 16~112ms(검색 문서 + pg_trgm, JIT 원인 제거), 읽기 혼합 처리량 180~384 → 13,361~14,720 TPS |
+| 운영 | 배포 종료 시 끊기는 요청 2~3/40 → 0, PITR 6/6 복구, 비동기 복제 유실 2/10 재현(동기 0) |
+| 관측·검증 | 알림 6종 중 처음 3종 미감지 → 6/6, PR 성능 게이트(k6)가 놓친 회귀의 원인을 고쳐 검출 |
+| 캐시 | Redis로 검색 건수 p95 142.7 → 13.1ms, Redis 장애 중 실패율 0% |
+
+요약: [`docs/db-optimization/00-portfolio.md`](docs/db-optimization/00-portfolio.md) · 상세: `docs/db-optimization/01~11`
+
 ## 팀 작업 이후: 개인 포크에서 한 작업
 
-팀 저장소 `main`(2026-09-14 시점)을 포크해서 2026-10에 진행했다. **배포본(팀 저장소 `develop`)에는 반영되지 않았다.**
+팀 저장소 `main`(2026-09-14 시점)을 포크해서 2026-10 ~ 2026-11에 진행했다. **배포본(팀 저장소 `develop`)에는 반영되지 않았다.**
 
 | 작업 | 내용 |
 |---|---|
@@ -236,6 +259,9 @@ mock 기반 테스트가 무엇을 보장하지 못하는지 확인한 계기가
 | 에러 화면·접근성 | 조회 실패 안내와 다시 시도, Modal `role="dialog"`, Toast `role="status"` |
 | 린트·CI | ESLint(`next/core-web-vitals`) 설정, GitHub Actions로 PR마다 프론트·백엔드 타입 검사·린트·테스트 |
 | 기타 | 카카오 API 세마포어의 대기열을 배열(`shift` O(n))에서 연결 리스트 큐(O(1))로 교체 |
+| 백엔드·DB 신뢰성 | 위 [기술적 판단 7](#7-백엔드db-신뢰성-정합성--성능--운영-개인-포크). 마이그레이션 3개(트리거·검색 인덱스·FK 인덱스), 통합 테스트 31개 |
+| DB 운영 실습 | `ops-lab/`: PITR·보관 정책, 스트리밍 복제·장애 전환, PgBouncer, Prometheus·Grafana 알림(장애 주입 훈련) |
+| 성능 게이트·캐시 | k6 부하 시나리오 + PR 성능 회귀 게이트(`.github/workflows/perf.yml`), Redis 공유 캐시(장애 시 원본 폴백) |
 
 ## AI 활용 방식
 
@@ -320,3 +346,7 @@ npm run typecheck    # (포크)
 - 백엔드 라우트 테스트는 supertest로 실제 라우터를 태우고 Prisma·인증만 mock한다.
 - 화면 테스트(포크)는 MSW 가짜 서버(`frontend/src/test/msw`)와 `renderWithProviders`(테스트마다 새 QueryClient)를 쓴다.
 - CI(포크): `.github/workflows/ci.yml`이 PR과 `main` push마다 프론트(타입 검사·린트·테스트)와 백엔드(타입 검사·테스트)를 병렬로 돌린다.
+- 백엔드 통합 테스트(포크): 실제 PostgreSQL 16에서 동시성·트랜잭션·트리거·CASCADE를 검증한다.
+  `cd backend && npm run db:test:up`(Docker) → `.env.test.example`을 `.env.test`로 복사 → `npm run test:int`. CI에서는 서비스 컨테이너로 돈다.
+- 성능 게이트(포크): 백엔드가 바뀐 PR마다 `.github/workflows/perf.yml`이 base·head를 번갈아 k6로 측정해 p95 회귀를 판정한다.
+  로컬: `bash backend/scripts/load/perf-gate.sh`(근거와 검증은 `docs/db-optimization/10`).
