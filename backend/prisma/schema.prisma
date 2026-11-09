@@ -137,6 +137,9 @@ model CourseScheduleFestival {
 
   courseScheduleId String
   courseSchedule CourseSchedule @relation(fields: [courseScheduleId], references: [id], onDelete: Cascade)
+
+  /// FK 인덱스 — 일정 삭제 CASCADE·일정 조회(IN) 때 전체 스캔을 막는다(인덱스 없는 FK 점검 쿼리로 발견).
+  @@index([courseScheduleId])
 }
 
 model Place {
@@ -293,4 +296,7 @@ model PostSave {
   /// 같은 글을 두 번 담을 수 없다 — 담긴 수가 부풀지 않게 DB가 막는다.
   @@unique([userId, postId])
   @@index([postId])
+  /// FK 인덱스 — 코스를 지울 때 ON DELETE SET NULL이 이 컬럼으로 PostSave를 찾는다. 없으면 담기 전체를
+  /// 스캔했다(담기 30만 건 기준 코스 삭제 13ms 중 11ms — pg_stat_statements로 발견).
+  @@index([courseId])
 }
